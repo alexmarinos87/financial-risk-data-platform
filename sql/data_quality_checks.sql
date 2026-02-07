@@ -1,0 +1,2 @@
+-- Example data quality checks
+-- SELECT COUNT(*) FROM raw_events WHERE ts_event IS NULL;

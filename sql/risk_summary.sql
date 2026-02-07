@@ -1,0 +1,2 @@
+-- Example risk summary
+-- SELECT symbol, MAX(volatility_5m) FROM volatility_metrics GROUP BY symbol;

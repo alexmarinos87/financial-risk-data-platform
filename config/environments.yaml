@@ -1,0 +1,7 @@
+environments:
+  dev:
+    s3_raw_bucket: "risk-raw-dev"
+    s3_curated_bucket: "risk-curated-dev"
+  prod:
+    s3_raw_bucket: "risk-raw-prod"
+    s3_curated_bucket: "risk-curated-prod"

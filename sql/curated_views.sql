@@ -1,0 +1,4 @@
+-- Example curated view
+-- SELECT symbol, AVG(price) AS avg_price
+-- FROM curated_prices
+-- GROUP BY symbol;
