@@ -27,6 +27,20 @@ pip install -e .
 pytest -q
 ```
 
+## Run The Demo Pipeline
+
+Run a local end-to-end pipeline with a small sample dataset:
+
+```bash
+python -m src.orchestration.run_pipeline
+```
+
+Provide your own JSON events (list of objects) if desired:
+
+```bash
+python -m src.orchestration.run_pipeline --input tests/fixtures/sample_events.json
+```
+
 ## Data Sources
 
 This project is designed for free, legal, and finance-credible sources. Examples:
