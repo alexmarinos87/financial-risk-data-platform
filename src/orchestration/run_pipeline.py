@@ -55,6 +55,11 @@ def _parse_args() -> argparse.Namespace:
         default=5,
         help="Rolling window length for volatility.",
     )
+    parser.add_argument(
+        "--summary-json",
+        type=Path,
+        help="Optional path to write the pipeline run summary as JSON.",
+    )
     return parser.parse_args()
 
 
@@ -224,6 +229,9 @@ def main() -> None:
         window_minutes=args.window_minutes,
         vol_window=args.vol_window,
     )
+    if args.summary_json is not None:
+        with args.summary_json.open("w", encoding="utf-8") as handle:
+            json.dump(summary, handle, indent=2, sort_keys=True, default=str)
 
     print("Pipeline run summary")
     print(f"Raw events written: {summary['raw_events']}")
