@@ -27,6 +27,15 @@ pip install -e .
 pytest -q
 ```
 
+For local quality checks (recommended before every PR):
+
+```bash
+pip install -e .[dev]
+make check
+pre-commit install
+pre-commit run --all-files
+```
+
 ## Run The Demo Pipeline
 
 Run a local end-to-end pipeline with a small sample dataset:

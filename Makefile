@@ -1,4 +1,4 @@
-.PHONY: lint test format
+.PHONY: lint format typecheck test check install-hooks precommit
 
 lint:
 	ruff check .
@@ -6,5 +6,16 @@ lint:
 format:
 	ruff check . --fix
 
+typecheck:
+	mypy src tests
+
 test:
-	pytest -q
+	python3 -m pytest -q
+
+check: lint typecheck test
+
+install-hooks:
+	pre-commit install
+
+precommit:
+	pre-commit run --all-files
