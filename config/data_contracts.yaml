@@ -1,0 +1,20 @@
+contracts:
+  market_event:
+    version: v1
+    compatibility: backward
+    required_fields:
+      - event_id
+      - symbol
+      - price
+      - volume
+      - ts_event
+      - ts_ingest
+      - source
+    schema:
+      event_id: string
+      symbol: string
+      price: float
+      volume: integer
+      ts_event: timestamp
+      ts_ingest: timestamp
+      source: string
