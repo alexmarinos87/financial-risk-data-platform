@@ -13,15 +13,14 @@ from ..analytics.risk_metrics import value_at_risk
 from ..analytics.returns import compute_returns
 from ..analytics.volatility import rolling_volatility
 from ..common.config import load_yaml
-from ..ingestion.schemas import MarketEvent
+from ..common.exceptions import DataQualityError
+from ..ingestion.schemas import MarketEvent, load_market_event_contract
 from ..processing.deduplicator import dedupe_events
 from ..processing.normaliser import normalize_symbol
 from ..processing.validator import require_fields
 from ..processing.windowing import floor_time
 from ..storage.partitioning import partition_path
-from ..storage.s3_writer import write_records
-
-REQUIRED_FIELDS = ["event_id", "symbol", "price", "volume", "ts_event", "ts_ingest", "source"]
+from ..storage.s3_writer import write_records, write_run_metadata
 
 
 def _parse_args() -> argparse.Namespace:
@@ -36,6 +35,28 @@ def _parse_args() -> argparse.Namespace:
         type=Path,
         default=Path("config/risk_thresholds.yaml"),
         help="Path to risk thresholds YAML.",
+    )
+    parser.add_argument(
+        "--contracts",
+        type=Path,
+        default=Path("config/data_contracts.yaml"),
+        help="Path to data contracts YAML.",
+    )
+    parser.add_argument(
+        "--output-root",
+        type=Path,
+        default=Path("data_lake"),
+        help="Root path for local bronze/silver/gold datasets.",
+    )
+    parser.add_argument(
+        "--run-id",
+        type=str,
+        help="Optional stable run id. Use this for idempotent reruns.",
+    )
+    parser.add_argument(
+        "--allow-dq-breach",
+        action="store_true",
+        help="Continue and exit successfully even when DQ thresholds are breached.",
     )
     parser.add_argument(
         "--late-seconds",
@@ -124,10 +145,16 @@ def _load_input(path: Path | None) -> list[dict[str, Any]]:
     return data
 
 
-def _validate_and_normalize(payload: dict[str, Any]) -> dict[str, Any]:
-    require_fields(payload, REQUIRED_FIELDS)
+def _validate_and_normalize(
+    payload: dict[str, Any],
+    *,
+    required_fields: list[str],
+    contract_version: str,
+) -> dict[str, Any]:
+    require_fields(payload, required_fields)
     payload = dict(payload)
     payload["symbol"] = normalize_symbol(str(payload["symbol"]))
+    payload["contract_version"] = contract_version
     event = MarketEvent.model_validate(payload)
     return event.model_dump()
 
@@ -146,16 +173,61 @@ def _evaluate_max(value: float, max_value: float | None) -> str:
     return "ok"
 
 
+def _resolve_run_id(run_id: str | None) -> str:
+    if run_id:
+        return run_id
+    return datetime.now(timezone.utc).strftime("manual-%Y%m%dT%H%M%SZ")
+
+
+def _build_risk_summary_records(
+    *,
+    symbols: list[str],
+    volatility_latest: dict[str, float],
+    var_latest: dict[str, float],
+    volatility_status: dict[str, str],
+    run_id: str,
+    ts_run: datetime,
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "symbol": symbol,
+            "volatility_5m": volatility_latest.get(symbol),
+            "value_at_risk_95": var_latest.get(symbol),
+            "volatility_status": volatility_status.get(symbol, "ok"),
+            "run_id": run_id,
+            "ts_run": ts_run,
+        }
+        for symbol in symbols
+    ]
+
+
 def run_pipeline(
     input_path: Path | None,
     thresholds_path: Path,
     late_seconds: int,
     window_minutes: int,
     vol_window: int,
+    output_root: Path = Path("data_lake"),
+    contracts_path: Path = Path("config/data_contracts.yaml"),
+    run_id: str | None = None,
+    fail_on_dq: bool = True,
 ) -> dict[str, Any]:
-    raw_payloads = _load_input(input_path)
+    contract = load_market_event_contract(contracts_path)
+    required_fields = [str(field) for field in contract["required_fields"]]
+    contract_version = str(contract["version"])
 
-    validated = [_validate_and_normalize(payload) for payload in raw_payloads]
+    resolved_run_id = _resolve_run_id(run_id)
+    ts_run = datetime.now(timezone.utc)
+
+    raw_payloads = _load_input(input_path)
+    validated = [
+        _validate_and_normalize(
+            payload,
+            required_fields=required_fields,
+            contract_version=contract_version,
+        )
+        for payload in raw_payloads
+    ]
     deduped = dedupe_events(validated, key="event_id")
 
     for event in deduped:
@@ -170,45 +242,123 @@ def run_pipeline(
     )
     late_rate_value = late_rate(late_count, len(deduped))
 
-    df = pd.DataFrame(deduped).sort_values(["symbol", "ts_event"])
-    returns = df.groupby("symbol")["price"].apply(compute_returns)
-    vol = returns.groupby("symbol").apply(lambda series: rolling_volatility(series, vol_window))
+    volatility_latest: dict[str, float] = {}
+    var_latest: dict[str, float] = {}
 
-    volatility_latest: dict[str, float] = (
-        vol.groupby("symbol").tail(1).droplevel(0).to_dict() if not vol.empty else {}
-    )
-    var_latest: dict[str, float] = (
-        returns.groupby("symbol").apply(value_at_risk).to_dict() if not returns.empty else {}
-    )
+    if deduped:
+        df = pd.DataFrame(deduped).sort_values(["symbol", "ts_event"])
+        for symbol, symbol_df in df.groupby("symbol"):
+            symbol_returns = compute_returns(symbol_df["price"])
+            if symbol_returns.empty:
+                continue
+            var_latest[symbol] = value_at_risk(symbol_returns)
+            symbol_vol = rolling_volatility(symbol_returns, vol_window)
+            if not symbol_vol.empty:
+                volatility_latest[symbol] = float(symbol_vol.iloc[-1])
 
     thresholds = load_yaml(thresholds_path)
     vol_thresholds = thresholds["thresholds"]["volatility_5m"]
     dq_thresholds = thresholds["thresholds"]["data_quality"]
 
     volatility_status = {
-        symbol: _evaluate_threshold(value, vol_thresholds.get("warn"), vol_thresholds.get("critical"))
+        symbol: _evaluate_threshold(
+            value,
+            vol_thresholds.get("warn"),
+            vol_thresholds.get("critical"),
+        )
         for symbol, value in volatility_latest.items()
     }
     late_status = _evaluate_max(late_rate_value, dq_thresholds.get("max_late_rate"))
     duplicate_status = _evaluate_max(duplicate_rate, dq_thresholds.get("max_duplicate_rate"))
 
-    raw_written = write_records(deduped)
-    curated_written = write_records(
-        [
-            {
-                "late_rate": late_rate_value,
-                "duplicate_rate": duplicate_rate,
-                "volatility_latest": volatility_latest,
-                "value_at_risk": var_latest,
-            }
-        ]
+    dq_failures: list[str] = []
+    if late_status != "ok":
+        dq_failures.append(
+            f"late_rate {late_rate_value:.4f} exceeded max_late_rate "
+            f"{dq_thresholds.get('max_late_rate')}"
+        )
+    if duplicate_status != "ok":
+        dq_failures.append(
+            f"duplicate_rate {duplicate_rate:.4f} exceeded max_duplicate_rate "
+            f"{dq_thresholds.get('max_duplicate_rate')}"
+        )
+
+    bronze_written = write_records(
+        validated,
+        layer="bronze",
+        dataset="market_events",
+        root_path=output_root,
+        partition_field="ts_ingest",
+        run_id=resolved_run_id,
+        contract_version=contract_version,
+    )
+    silver_written = write_records(
+        deduped,
+        layer="silver",
+        dataset="market_events",
+        root_path=output_root,
+        partition_field="ts_ingest",
+        run_id=resolved_run_id,
+        contract_version=contract_version,
+    )
+
+    symbols = sorted(set(volatility_latest.keys()) | set(var_latest.keys()))
+    risk_summary_records = _build_risk_summary_records(
+        symbols=symbols,
+        volatility_latest=volatility_latest,
+        var_latest=var_latest,
+        volatility_status=volatility_status,
+        run_id=resolved_run_id,
+        ts_run=ts_run,
+    )
+    data_quality_records = [
+        {
+            "run_id": resolved_run_id,
+            "ts_run": ts_run,
+            "events_total": total_events,
+            "events_deduped": len(deduped),
+            "late_count": late_count,
+            "late_rate": late_rate_value,
+            "duplicate_rate": duplicate_rate,
+            "late_status": late_status,
+            "duplicate_status": duplicate_status,
+            "contract_version": contract_version,
+        }
+    ]
+
+    gold_risk_written = write_records(
+        risk_summary_records,
+        layer="gold",
+        dataset="risk_summary",
+        root_path=output_root,
+        partition_field="ts_run",
+        run_id=resolved_run_id,
+        contract_version=contract_version,
+    )
+    gold_dq_written = write_records(
+        data_quality_records,
+        layer="gold",
+        dataset="data_quality_metrics",
+        root_path=output_root,
+        partition_field="ts_run",
+        run_id=resolved_run_id,
+        contract_version=contract_version,
     )
 
     partitions = sorted({partition_path(event["ts_ingest"]) for event in deduped})
+    run_metadata_path = output_root / "_runs" / f"{resolved_run_id}.json"
 
-    return {
-        "raw_events": raw_written,
-        "curated_records": curated_written,
+    summary = {
+        "run_id": resolved_run_id,
+        "contract_version": contract_version,
+        "raw_events": bronze_written,
+        "curated_records": gold_risk_written + gold_dq_written,
+        "records_written": {
+            "bronze_market_events": bronze_written,
+            "silver_market_events": silver_written,
+            "gold_risk_summary": gold_risk_written,
+            "gold_data_quality_metrics": gold_dq_written,
+        },
         "partitions": partitions,
         "late_rate": late_rate_value,
         "duplicate_rate": duplicate_rate,
@@ -217,7 +367,19 @@ def run_pipeline(
         "volatility_status": volatility_status,
         "late_status": late_status,
         "duplicate_status": duplicate_status,
+        "dq_passed": len(dq_failures) == 0,
+        "dq_failures": dq_failures,
+        "output_root": str(output_root),
+        "run_metadata_path": str(run_metadata_path),
     }
+
+    write_run_metadata(summary, root_path=output_root, run_id=resolved_run_id)
+
+    if fail_on_dq and dq_failures:
+        failure_message = "; ".join(dq_failures)
+        raise DataQualityError(f"DQ checks failed for run_id={resolved_run_id}: {failure_message}")
+
+    return summary
 
 
 def main() -> None:
@@ -225,6 +387,10 @@ def main() -> None:
     summary = run_pipeline(
         input_path=args.input,
         thresholds_path=args.thresholds,
+        contracts_path=args.contracts,
+        output_root=args.output_root,
+        run_id=args.run_id,
+        fail_on_dq=not args.allow_dq_breach,
         late_seconds=args.late_seconds,
         window_minutes=args.window_minutes,
         vol_window=args.vol_window,
@@ -234,14 +400,21 @@ def main() -> None:
             json.dump(summary, handle, indent=2, sort_keys=True, default=str)
 
     print("Pipeline run summary")
+    print(f"Run ID: {summary['run_id']}")
+    print(f"Contract version: {summary['contract_version']}")
     print(f"Raw events written: {summary['raw_events']}")
     print(f"Curated records written: {summary['curated_records']}")
     print(f"Partitions: {summary['partitions']}")
     print(f"Late rate: {summary['late_rate']:.2%} (status: {summary['late_status']})")
-    print(f"Duplicate rate: {summary['duplicate_rate']:.2%} (status: {summary['duplicate_status']})")
+    print(
+        f"Duplicate rate: {summary['duplicate_rate']:.2%} "
+        f"(status: {summary['duplicate_status']})"
+    )
     print(f"Volatility latest: {summary['volatility_latest']}")
     print(f"Volatility status: {summary['volatility_status']}")
     print(f"Value-at-Risk (95%): {summary['value_at_risk']}")
+    print(f"DQ passed: {summary['dq_passed']}")
+    print(f"Run metadata: {summary['run_metadata_path']}")
 
 
 if __name__ == "__main__":
