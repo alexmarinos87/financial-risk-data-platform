@@ -1,69 +1,83 @@
 # Financial Risk Data Platform
 
-A production-style data platform that ingests market data and external risk signals, validates and normalizes events, and produces decision-ready analytics (returns, volatility, data quality, and risk summaries).
+A production-style **Data Engineering** project for financial risk analytics. The platform ingests market events, applies contract-driven validation, writes partitioned bronze/silver/gold datasets, computes risk metrics, and enforces data quality thresholds.
 
-This repo is intentionally structured to resemble real internal data platforms at banks and fintechs. It is designed for clarity, reproducibility, and interview readiness.
+## Data Engineer Focus
+
+This repository is structured to demonstrate Data Engineer ownership areas:
+
+1. Data contracts and schema governance (`config/data_contracts.yaml`)
+2. Partitioned and idempotent storage writes (`src/storage/s3_writer.py`)
+3. Layered modeling (`bronze`, `silver`, `gold`)
+4. Data quality gates and run metadata (`src/orchestration/run_pipeline.py`)
+5. Deterministic backfills (`src/orchestration/backfill.py`)
 
 ## What It Does
 
 1. Ingests market data and external signals
 2. Validates schema, deduplicates, and normalizes events
 3. Aggregates into time windows
-4. Computes risk analytics and data quality metrics
-5. Stores raw and curated datasets with partitioning
+4. Computes risk analytics and DQ metrics
+5. Writes partitioned Parquet datasets by layer
 
 ## Quickstart
-
-1. Create a virtual environment and install dependencies.
-2. Review configuration in `config/`.
-3. Run unit tests to validate core logic.
-
-Example commands:
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -e .
+pip install -e .[dev]
 pytest -q
 ```
 
-For local quality checks (recommended before every PR):
+## Run Pipeline
+
+Run a local end-to-end pipeline with sample data:
 
 ```bash
-pip install -e .[dev]
-make check
-pre-commit install
-pre-commit run --all-files
+python -m src.orchestration.run_pipeline --run-id demo-001
 ```
 
-## Run The Demo Pipeline
-
-Run a local end-to-end pipeline with a small sample dataset:
+Provide your own JSON events:
 
 ```bash
-python -m src.orchestration.run_pipeline
+python -m src.orchestration.run_pipeline \
+  --input tests/fixtures/sample_events.json \
+  --run-id demo-002
 ```
 
-Provide your own JSON events (list of objects) if desired:
+Allow DQ threshold breaches without failing the run:
 
 ```bash
-python -m src.orchestration.run_pipeline --input tests/fixtures/sample_events.json
+python -m src.orchestration.run_pipeline --allow-dq-breach --run-id demo-soft-001
+```
+
+## Run Backfill
+
+```bash
+python -m src.orchestration.backfill \
+  --start-date 2025-01-01 \
+  --end-date 2025-01-03 \
+  --allow-dq-breach
+```
+
+## Output Layout
+
+```
+data_lake/
+  bronze/market_events/contract_version=v1/year=.../month=.../day=.../hour=.../run_id=....parquet
+  silver/market_events/contract_version=v1/year=.../month=.../day=.../hour=.../run_id=....parquet
+  gold/risk_summary/contract_version=v1/year=.../month=.../day=.../hour=.../run_id=....parquet
+  gold/data_quality_metrics/contract_version=v1/year=.../month=.../day=.../hour=.../run_id=....parquet
+  _runs/<run_id>.json
+  _runs/backfill-<start>-<end>.json
 ```
 
 ## Data Sources
 
-This project is designed for free, legal, and finance-credible sources. Examples:
+Examples of finance-credible sources:
 
 1. Stooq for historical market data
 2. FRED for macroeconomic indicators
 3. Exchange calendars for trading day logic
 
-See `docs/data-model.md` for event schemas.
-
-## Repository Layout
-
-See `docs/architecture.md` for the end-to-end design.
-
-## Notes
-
-This is a portfolio-grade platform scaffold. All modules are intentionally small but structured for expansion.
+See `docs/data-model.md` for schema details and `docs/architecture.md` for the full flow.

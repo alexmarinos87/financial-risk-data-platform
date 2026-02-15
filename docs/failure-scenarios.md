@@ -1,7 +1,7 @@
 # Failure Scenarios
 
-1. Late-arriving data causes window corrections
-2. Duplicate events from upstream provider
-3. Schema drift in external signal payloads
-4. Storage write failures with retries and idempotency
-5. Backfill job overlapping with live ingestion
+1. Contract violation: required fields are missing or types are incompatible.
+2. DQ threshold breach: late or duplicate rates exceed configured thresholds and run fails.
+3. Storage write failure: partitioned Parquet write fails on local/remote filesystem issues.
+4. Backfill interruption: one day fails; manifest captures completed and failed ranges.
+5. Idempotent rerun overwrite: same `run_id` intentionally replaces prior files for deterministic replay.

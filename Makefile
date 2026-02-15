@@ -1,4 +1,4 @@
-.PHONY: lint format typecheck test check install-hooks precommit
+.PHONY: lint format typecheck test check install-hooks precommit run-pipeline backfill
 
 lint:
 	ruff check .
@@ -19,3 +19,9 @@ install-hooks:
 
 precommit:
 	pre-commit run --all-files
+
+run-pipeline:
+	python3 -m src.orchestration.run_pipeline --run-id local-demo
+
+backfill:
+	python3 -m src.orchestration.backfill --start-date 2025-01-01 --end-date 2025-01-03 --allow-dq-breach
