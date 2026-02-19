@@ -1,0 +1,15 @@
+storage:
+  base_dir: "data"
+  raw:
+    base_path: "data/raw"
+    dataset: "market_events"
+  curated:
+    base_path: "data/curated"
+    datasets:
+      returns_1m: "returns_1m"
+      volatility_5m: "volatility_5m"
+      data_quality_metrics: "data_quality_metrics"
+      risk_summary: "risk_summary"
+  format: "parquet"
+  partitioning:
+    granularity: "hourly"
