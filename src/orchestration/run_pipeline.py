@@ -20,6 +20,7 @@ from ..processing.validator import require_fields
 from ..processing.windowing import floor_time
 from ..storage.partitioning import partition_path
 from ..storage.s3_writer import write_records
+from ..storage.storage_config import load_storage_config
 
 REQUIRED_FIELDS = ["event_id", "symbol", "price", "volume", "ts_event", "ts_ingest", "source"]
 
@@ -59,6 +60,12 @@ def _parse_args() -> argparse.Namespace:
         "--summary-json",
         type=Path,
         help="Optional path to write the pipeline run summary as JSON.",
+    )
+    parser.add_argument(
+        "--storage-config",
+        type=Path,
+        default=Path("config/storage.yaml"),
+        help="Path to storage configuration YAML.",
     )
     return parser.parse_args()
 
@@ -152,8 +159,10 @@ def run_pipeline(
     late_seconds: int,
     window_minutes: int,
     vol_window: int,
+    storage_config_path: Path,
 ) -> dict[str, Any]:
     raw_payloads = _load_input(input_path)
+    storage_config = load_storage_config(storage_config_path)
 
     validated = [_validate_and_normalize(payload) for payload in raw_payloads]
     deduped = dedupe_events(validated, key="event_id")
@@ -192,7 +201,13 @@ def run_pipeline(
     late_status = _evaluate_max(late_rate_value, dq_thresholds.get("max_late_rate"))
     duplicate_status = _evaluate_max(duplicate_rate, dq_thresholds.get("max_duplicate_rate"))
 
-    raw_written = write_records(deduped)
+    raw_dataset = storage_config["storage"]["raw"]["dataset"]
+    raw_written = write_records(
+        deduped,
+        kind="raw",
+        dataset=raw_dataset,
+        storage_config=storage_config,
+    )
     curated_written = write_records(
         [
             {
@@ -201,7 +216,10 @@ def run_pipeline(
                 "volatility_latest": volatility_latest,
                 "value_at_risk": var_latest,
             }
-        ]
+        ],
+        kind="curated",
+        dataset="risk_summary",
+        storage_config=storage_config,
     )
 
     partitions = sorted({partition_path(event["ts_ingest"]) for event in deduped})
@@ -228,6 +246,7 @@ def main() -> None:
         late_seconds=args.late_seconds,
         window_minutes=args.window_minutes,
         vol_window=args.vol_window,
+        storage_config_path=args.storage_config,
     )
     if args.summary_json is not None:
         with args.summary_json.open("w", encoding="utf-8") as handle:
