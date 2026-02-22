@@ -153,6 +153,12 @@ def _evaluate_max(value: float, max_value: float | None) -> str:
     return "ok"
 
 
+def _latest_metric_timestamp(events: list[dict[str, Any]]) -> datetime:
+    if not events:
+        return datetime.now(timezone.utc)
+    return max(event["ts_ingest"] for event in events)
+
+
 def run_pipeline(
     input_path: Path | None,
     thresholds_path: Path,
@@ -179,54 +185,135 @@ def run_pipeline(
     )
     late_rate_value = late_rate(late_count, len(deduped))
 
-    df = pd.DataFrame(deduped).sort_values(["symbol", "ts_event"])
-    returns = df.groupby("symbol")["price"].apply(compute_returns)
-    vol = returns.groupby("symbol").apply(lambda series: rolling_volatility(series, vol_window))
-
-    volatility_latest: dict[str, float] = (
-        vol.groupby("symbol").tail(1).droplevel(0).to_dict() if not vol.empty else {}
-    )
-    var_latest: dict[str, float] = (
-        returns.groupby("symbol").apply(value_at_risk).to_dict() if not returns.empty else {}
-    )
-
     thresholds = load_yaml(thresholds_path)
     vol_thresholds = thresholds["thresholds"]["volatility_5m"]
     dq_thresholds = thresholds["thresholds"]["data_quality"]
 
-    volatility_status = {
-        symbol: _evaluate_threshold(value, vol_thresholds.get("warn"), vol_thresholds.get("critical"))
-        for symbol, value in volatility_latest.items()
-    }
     late_status = _evaluate_max(late_rate_value, dq_thresholds.get("max_late_rate"))
     duplicate_status = _evaluate_max(duplicate_rate, dq_thresholds.get("max_duplicate_rate"))
 
+    returns_records: list[dict[str, Any]] = []
+    volatility_records: list[dict[str, Any]] = []
+    var_latest: dict[str, float] = {}
+    volatility_latest: dict[str, float] = {}
+
+    if deduped:
+        df = pd.DataFrame(deduped).sort_values(["symbol", "ts_event"])
+        for symbol, group in df.groupby("symbol", sort=True):
+            returns_series = compute_returns(group["price"])
+            if returns_series.empty:
+                continue
+
+            var_latest[symbol] = float(value_at_risk(returns_series))
+            for idx, value in returns_series.items():
+                row = group.loc[idx]
+                returns_records.append(
+                    {
+                        "symbol": symbol,
+                        "ts_event": row["ts_event"],
+                        "window_start": row["window_start"],
+                        "return_1m": float(value),
+                        "ts_ingest": row["ts_ingest"],
+                    }
+                )
+
+            vol_series = rolling_volatility(returns_series, vol_window)
+            if vol_series.empty:
+                continue
+
+            volatility_latest[symbol] = float(vol_series.iloc[-1])
+            for idx, value in vol_series.items():
+                row = group.loc[idx]
+                volatility_records.append(
+                    {
+                        "symbol": symbol,
+                        "ts_event": row["ts_event"],
+                        "window_start": row["window_start"],
+                        "volatility_5m": float(value),
+                        "ts_ingest": row["ts_ingest"],
+                    }
+                )
+
+    volatility_status = {
+        symbol: _evaluate_threshold(
+            value,
+            vol_thresholds.get("warn"),
+            vol_thresholds.get("critical"),
+        )
+        for symbol, value in volatility_latest.items()
+    }
+
     raw_dataset = storage_config["storage"]["raw"]["dataset"]
+    metric_ts = _latest_metric_timestamp(deduped)
+    data_quality_records = [
+        {
+            "total_events": total_events,
+            "deduped_events": len(deduped),
+            "duplicate_events": total_events - len(deduped),
+            "late_events": late_count,
+            "late_rate": late_rate_value,
+            "duplicate_rate": duplicate_rate,
+            "late_status": late_status,
+            "duplicate_status": duplicate_status,
+            "ts_ingest": metric_ts,
+        }
+    ]
+    risk_symbols = sorted(set(var_latest) | set(volatility_latest))
+    risk_summary_records = [
+        {
+            "symbol": symbol,
+            "volatility_5m": volatility_latest.get(symbol),
+            "value_at_risk_95": var_latest.get(symbol),
+            "volatility_status": volatility_status.get(symbol, "no_data"),
+            "late_rate": late_rate_value,
+            "duplicate_rate": duplicate_rate,
+            "late_status": late_status,
+            "duplicate_status": duplicate_status,
+            "ts_ingest": metric_ts,
+        }
+        for symbol in risk_symbols
+    ]
+
     raw_written = write_records(
         deduped,
         kind="raw",
         dataset=raw_dataset,
         storage_config=storage_config,
     )
-    curated_written = write_records(
-        [
-            {
-                "late_rate": late_rate_value,
-                "duplicate_rate": duplicate_rate,
-                "volatility_latest": volatility_latest,
-                "value_at_risk": var_latest,
-            }
-        ],
-        kind="curated",
-        dataset="risk_summary",
-        storage_config=storage_config,
-    )
+    curated_writes = {
+        "returns_1m": write_records(
+            returns_records,
+            kind="curated",
+            dataset="returns_1m",
+            storage_config=storage_config,
+        ),
+        "volatility_5m": write_records(
+            volatility_records,
+            kind="curated",
+            dataset="volatility_5m",
+            storage_config=storage_config,
+        ),
+        "data_quality_metrics": write_records(
+            data_quality_records,
+            kind="curated",
+            dataset="data_quality_metrics",
+            storage_config=storage_config,
+        ),
+        "risk_summary": write_records(
+            risk_summary_records,
+            kind="curated",
+            dataset="risk_summary",
+            storage_config=storage_config,
+        ),
+    }
+    curated_written = sum(curated_writes.values())
 
     partitions = sorted({partition_path(event["ts_ingest"]) for event in deduped})
 
     return {
         "raw_events": raw_written,
         "curated_records": curated_written,
+        "curated_records_by_dataset": curated_writes,
         "partitions": partitions,
         "late_rate": late_rate_value,
         "duplicate_rate": duplicate_rate,
@@ -257,7 +344,10 @@ def main() -> None:
     print(f"Curated records written: {summary['curated_records']}")
     print(f"Partitions: {summary['partitions']}")
     print(f"Late rate: {summary['late_rate']:.2%} (status: {summary['late_status']})")
-    print(f"Duplicate rate: {summary['duplicate_rate']:.2%} (status: {summary['duplicate_status']})")
+    print(
+        f"Duplicate rate: {summary['duplicate_rate']:.2%} "
+        f"(status: {summary['duplicate_status']})"
+    )
     print(f"Volatility latest: {summary['volatility_latest']}")
     print(f"Volatility status: {summary['volatility_status']}")
     print(f"Value-at-Risk (95%): {summary['value_at_risk']}")
