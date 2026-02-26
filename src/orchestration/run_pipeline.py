@@ -173,9 +173,6 @@ def run_pipeline(
     validated = [_validate_and_normalize(payload) for payload in raw_payloads]
     deduped = dedupe_events(validated, key="event_id")
 
-    for event in deduped:
-        event["window_start"] = floor_time(event["ts_event"], window_minutes)
-
     total_events = len(validated)
     duplicate_rate = 0.0 if total_events == 0 else 1 - (len(deduped) / total_events)
     late_count = sum(
@@ -199,6 +196,7 @@ def run_pipeline(
 
     if deduped:
         df = pd.DataFrame(deduped).sort_values(["symbol", "ts_event"])
+        df["window_start"] = df["ts_event"].map(lambda ts: floor_time(ts, window_minutes))
         for symbol, group in df.groupby("symbol", sort=True):
             returns_series = compute_returns(group["price"])
             if returns_series.empty:
