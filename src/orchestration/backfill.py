@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
+from uuid import uuid4
 
 import duckdb
 
@@ -68,6 +69,8 @@ def run_backfill(
     if end_ts < start_ts:
         raise ValueError("end_date must be greater than or equal to start_date")
 
+    run_id = str(uuid4())
+    run_started_at = datetime.now(timezone.utc)
     step = _window_delta(window)
     current = start_ts.replace(minute=0, second=0, microsecond=0)
 
@@ -77,32 +80,59 @@ def run_backfill(
     replay_summaries: list[dict[str, Any]] = []
     with TemporaryDirectory(prefix="backfill_") as tmp_dir:
         while current <= end_ts:
+            started_at = datetime.now(timezone.utc)
             partition = partition_path(current)
             records = _load_partition_records(raw_dataset_dir / partition)
 
-            if records:
-                input_path = Path(tmp_dir) / f"{current.strftime('%Y%m%dT%H%M%SZ')}.json"
-                with input_path.open("w", encoding="utf-8") as handle:
-                    json.dump(records, handle)
-
-                summary = run_pipeline(
-                    input_path=input_path,
-                    thresholds_path=thresholds_path,
-                    late_seconds=late_seconds,
-                    window_minutes=window_minutes,
-                    vol_window=vol_window,
-                    storage_config_path=storage_config_path,
-                )
+            if not records:
                 replay_summaries.append(
                     {
+                        "run_id": run_id,
                         "partition": partition,
                         "window_start": current.isoformat(),
                         "window": window,
-                        "records_replayed": len(records),
-                        **summary,
+                        "status": "skipped_no_records",
+                        "records_replayed": 0,
+                        "raw_events": 0,
+                        "curated_records": 0,
+                        "started_at": started_at.isoformat(),
+                        "ended_at": datetime.now(timezone.utc).isoformat(),
                     }
                 )
+                current += step
+                continue
+
+            input_path = Path(tmp_dir) / f"{current.strftime('%Y%m%dT%H%M%SZ')}.json"
+            with input_path.open("w", encoding="utf-8") as handle:
+                json.dump(records, handle)
+
+            summary = run_pipeline(
+                input_path=input_path,
+                thresholds_path=thresholds_path,
+                late_seconds=late_seconds,
+                window_minutes=window_minutes,
+                vol_window=vol_window,
+                storage_config_path=storage_config_path,
+            )
+            replay_summaries.append(
+                {
+                    "run_id": run_id,
+                    "partition": partition,
+                    "window_start": current.isoformat(),
+                    "window": window,
+                    "status": "success",
+                    "records_replayed": len(records),
+                    "started_at": started_at.isoformat(),
+                    "ended_at": datetime.now(timezone.utc).isoformat(),
+                    **summary,
+                }
+            )
 
             current += step
+
+    run_ended_at = datetime.now(timezone.utc).isoformat()
+    for summary in replay_summaries:
+        summary["run_started_at"] = run_started_at.isoformat()
+        summary["run_ended_at"] = run_ended_at
 
     return replay_summaries

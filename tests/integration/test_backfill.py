@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
+from uuid import UUID
 
 import yaml
 
@@ -115,9 +116,16 @@ def test_run_backfill_replays_hourly_partitions_and_is_idempotent(tmp_path: Path
         "year=2025/month=01/day=20/hour=10",
         "year=2025/month=01/day=20/hour=11",
     }
+    first_run_ids = {summary["run_id"] for summary in first}
+    assert len(first_run_ids) == 1
+    UUID(next(iter(first_run_ids)))
+    assert all(summary["status"] == "success" for summary in first)
     assert all(summary["records_replayed"] == 3 for summary in first)
     assert all(summary["raw_events"] == 0 for summary in first)
     assert all(summary["curated_records"] > 0 for summary in first)
+    assert len({summary["run_started_at"] for summary in first}) == 1
+    assert len({summary["run_ended_at"] for summary in first}) == 1
+    assert all(summary["started_at"] <= summary["ended_at"] for summary in first)
 
     second = run_backfill(
         "2025-01-20T10:00:00Z",
@@ -128,5 +136,9 @@ def test_run_backfill_replays_hourly_partitions_and_is_idempotent(tmp_path: Path
         vol_window=2,
     )
     assert len(second) == 2
+    second_run_ids = {summary["run_id"] for summary in second}
+    assert len(second_run_ids) == 1
+    assert second_run_ids != first_run_ids
+    assert all(summary["status"] == "success" for summary in second)
     assert all(summary["raw_events"] == 0 for summary in second)
     assert all(summary["curated_records"] == 0 for summary in second)
