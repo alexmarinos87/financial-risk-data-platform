@@ -8,3 +8,7 @@ class IngestionError(Exception):
 
 class StorageError(Exception):
     pass
+
+
+class OverlapError(Exception):
+    pass

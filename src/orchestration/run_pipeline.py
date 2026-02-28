@@ -21,6 +21,7 @@ from ..processing.windowing import floor_time
 from ..storage.partitioning import partition_path
 from ..storage.s3_writer import write_records
 from ..storage.storage_config import load_storage_config
+from .locks import acquire_partition_locks, release_partition_locks
 
 REQUIRED_FIELDS = ["event_id", "symbol", "price", "volume", "ts_event", "ts_ingest", "source"]
 
@@ -166,6 +167,7 @@ def run_pipeline(
     window_minutes: int,
     vol_window: int,
     storage_config_path: Path,
+    lock_owner: str | None = None,
 ) -> dict[str, Any]:
     raw_payloads = _load_input(input_path)
     storage_config = load_storage_config(storage_config_path)
@@ -272,41 +274,50 @@ def run_pipeline(
         for symbol in risk_symbols
     ]
 
-    raw_written = write_records(
-        deduped,
-        kind="raw",
-        dataset=raw_dataset,
-        storage_config=storage_config,
-    )
-    curated_writes = {
-        "returns_1m": write_records(
-            returns_records,
-            kind="curated",
-            dataset="returns_1m",
-            storage_config=storage_config,
-        ),
-        "volatility_5m": write_records(
-            volatility_records,
-            kind="curated",
-            dataset="volatility_5m",
-            storage_config=storage_config,
-        ),
-        "data_quality_metrics": write_records(
-            data_quality_records,
-            kind="curated",
-            dataset="data_quality_metrics",
-            storage_config=storage_config,
-        ),
-        "risk_summary": write_records(
-            risk_summary_records,
-            kind="curated",
-            dataset="risk_summary",
-            storage_config=storage_config,
-        ),
-    }
-    curated_written = sum(curated_writes.values())
-
     partitions = sorted({partition_path(event["ts_ingest"]) for event in deduped})
+    lock_paths: list[Path] = []
+    try:
+        lock_paths = acquire_partition_locks(
+            Path(storage_config["storage"]["base_dir"]),
+            partitions,
+            lock_owner or "live",
+        )
+
+        raw_written = write_records(
+            deduped,
+            kind="raw",
+            dataset=raw_dataset,
+            storage_config=storage_config,
+        )
+        curated_writes = {
+            "returns_1m": write_records(
+                returns_records,
+                kind="curated",
+                dataset="returns_1m",
+                storage_config=storage_config,
+            ),
+            "volatility_5m": write_records(
+                volatility_records,
+                kind="curated",
+                dataset="volatility_5m",
+                storage_config=storage_config,
+            ),
+            "data_quality_metrics": write_records(
+                data_quality_records,
+                kind="curated",
+                dataset="data_quality_metrics",
+                storage_config=storage_config,
+            ),
+            "risk_summary": write_records(
+                risk_summary_records,
+                kind="curated",
+                dataset="risk_summary",
+                storage_config=storage_config,
+            ),
+        }
+        curated_written = sum(curated_writes.values())
+    finally:
+        release_partition_locks(lock_paths)
 
     return {
         "raw_events": raw_written,

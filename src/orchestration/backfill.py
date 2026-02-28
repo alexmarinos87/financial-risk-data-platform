@@ -9,6 +9,7 @@ from uuid import uuid4
 
 import duckdb
 
+from ..common.exceptions import OverlapError
 from ..storage.partitioning import partition_path
 from ..storage.storage_config import load_storage_config
 from .run_pipeline import run_pipeline
@@ -106,27 +107,45 @@ def run_backfill(
             with input_path.open("w", encoding="utf-8") as handle:
                 json.dump(records, handle)
 
-            summary = run_pipeline(
-                input_path=input_path,
-                thresholds_path=thresholds_path,
-                late_seconds=late_seconds,
-                window_minutes=window_minutes,
-                vol_window=vol_window,
-                storage_config_path=storage_config_path,
-            )
-            replay_summaries.append(
-                {
-                    "run_id": run_id,
-                    "partition": partition,
-                    "window_start": current.isoformat(),
-                    "window": window,
-                    "status": "success",
-                    "records_replayed": len(records),
-                    "started_at": started_at.isoformat(),
-                    "ended_at": datetime.now(timezone.utc).isoformat(),
-                    **summary,
-                }
-            )
+            try:
+                summary = run_pipeline(
+                    input_path=input_path,
+                    thresholds_path=thresholds_path,
+                    late_seconds=late_seconds,
+                    window_minutes=window_minutes,
+                    vol_window=vol_window,
+                    storage_config_path=storage_config_path,
+                    lock_owner=f"backfill:{run_id}:{partition}",
+                )
+                replay_summaries.append(
+                    {
+                        "run_id": run_id,
+                        "partition": partition,
+                        "window_start": current.isoformat(),
+                        "window": window,
+                        "status": "success",
+                        "records_replayed": len(records),
+                        "started_at": started_at.isoformat(),
+                        "ended_at": datetime.now(timezone.utc).isoformat(),
+                        **summary,
+                    }
+                )
+            except OverlapError as exc:
+                replay_summaries.append(
+                    {
+                        "run_id": run_id,
+                        "partition": partition,
+                        "window_start": current.isoformat(),
+                        "window": window,
+                        "status": "blocked_overlap",
+                        "records_replayed": 0,
+                        "raw_events": 0,
+                        "curated_records": 0,
+                        "overlap_error": str(exc),
+                        "started_at": started_at.isoformat(),
+                        "ended_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                )
 
             current += step
 
