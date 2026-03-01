@@ -96,7 +96,7 @@ def _seed_raw_partitions(storage_config: dict) -> None:
     write_records(records, kind="raw", storage_config=storage_config)
 
 
-def test_run_backfill_replays_hourly_partitions_and_is_idempotent(tmp_path: Path) -> None:
+def test_run_backfill_replays_hourly_partitions_resumes_and_can_force_rerun(tmp_path: Path) -> None:
     storage_config = _build_storage_config(tmp_path)
     storage_config_path = tmp_path / "storage.yaml"
     with storage_config_path.open("w", encoding="utf-8") as handle:
@@ -136,16 +136,28 @@ def test_run_backfill_replays_hourly_partitions_and_is_idempotent(tmp_path: Path
         thresholds_path=Path("config/risk_thresholds.yaml"),
         vol_window=2,
     )
-    assert len(second) == 2
-    second_run_ids = {summary["run_id"] for summary in second}
-    assert len(second_run_ids) == 1
-    assert second_run_ids != first_run_ids
-    assert all(summary["status"] == "success" for summary in second)
-    assert all(summary["raw_events"] == 0 for summary in second)
-    assert all(summary["curated_records"] == 0 for summary in second)
+    assert second == []
 
 
-def test_run_backfill_blocks_partition_overlap_with_live_runs(tmp_path: Path) -> None:
+    third = run_backfill(
+        "2025-01-20T10:00:00Z",
+        "2025-01-20T11:00:00Z",
+        "hourly",
+        storage_config_path=storage_config_path,
+        thresholds_path=Path("config/risk_thresholds.yaml"),
+        vol_window=2,
+        resume=False,
+    )
+    assert len(third) == 2
+    third_run_ids = {summary["run_id"] for summary in third}
+    assert len(third_run_ids) == 1
+    assert third_run_ids != first_run_ids
+    assert all(summary["status"] == "success" for summary in third)
+    assert all(summary["raw_events"] == 0 for summary in third)
+    assert all(summary["curated_records"] == 0 for summary in third)
+
+
+def test_run_backfill_resumes_after_blocked_overlap(tmp_path: Path) -> None:
     storage_config = _build_storage_config(tmp_path)
     storage_config_path = tmp_path / "storage.yaml"
     with storage_config_path.open("w", encoding="utf-8") as handle:
@@ -155,7 +167,7 @@ def test_run_backfill_blocks_partition_overlap_with_live_runs(tmp_path: Path) ->
     locked_partition = "year=2025/month=01/day=20/hour=10"
     lock_paths = acquire_partition_locks(tmp_path, [locked_partition], owner="live:test")
     try:
-        summaries = run_backfill(
+        first = run_backfill(
             "2025-01-20T10:00:00Z",
             "2025-01-20T11:00:00Z",
             "hourly",
@@ -166,20 +178,39 @@ def test_run_backfill_blocks_partition_overlap_with_live_runs(tmp_path: Path) ->
     finally:
         release_partition_locks(lock_paths)
 
-    by_partition = {summary["partition"]: summary for summary in summaries}
-    assert set(by_partition) == {
-        "year=2025/month=01/day=20/hour=10",
-        "year=2025/month=01/day=20/hour=11",
-    }
+    assert len(first) == 1
 
-    blocked = by_partition["year=2025/month=01/day=20/hour=10"]
+    blocked = first[0]
+    assert blocked["partition"] == locked_partition
     assert blocked["status"] == "blocked_overlap"
     assert blocked["records_replayed"] == 0
     assert blocked["raw_events"] == 0
     assert blocked["curated_records"] == 0
     assert "already locked" in blocked["overlap_error"]
 
-    successful = by_partition["year=2025/month=01/day=20/hour=11"]
-    assert successful["status"] == "success"
-    assert successful["records_replayed"] == 3
-    assert successful["curated_records"] > 0
+    second = run_backfill(
+        "2025-01-20T10:00:00Z",
+        "2025-01-20T11:00:00Z",
+        "hourly",
+        storage_config_path=storage_config_path,
+        thresholds_path=Path("config/risk_thresholds.yaml"),
+        vol_window=2,
+    )
+    assert len(second) == 2
+    assert {summary["partition"] for summary in second} == {
+        "year=2025/month=01/day=20/hour=10",
+        "year=2025/month=01/day=20/hour=11",
+    }
+    assert all(summary["status"] == "success" for summary in second)
+    assert all(summary["records_replayed"] == 3 for summary in second)
+    assert all(summary["curated_records"] > 0 for summary in second)
+
+    third = run_backfill(
+        "2025-01-20T10:00:00Z",
+        "2025-01-20T11:00:00Z",
+        "hourly",
+        storage_config_path=storage_config_path,
+        thresholds_path=Path("config/risk_thresholds.yaml"),
+        vol_window=2,
+    )
+    assert third == []
