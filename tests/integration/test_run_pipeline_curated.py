@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import duckdb
@@ -210,3 +211,83 @@ def test_run_pipeline_blocks_when_partition_is_locked(tmp_path: Path) -> None:
             )
     finally:
         release_partition_locks(lock_paths)
+
+
+def test_run_pipeline_replaces_stale_partition_lock(tmp_path: Path) -> None:
+    storage_config = {
+        "storage": {
+            "base_dir": str(tmp_path),
+            "raw": {
+                "base_path": str(tmp_path / "raw"),
+                "dataset": "market_events",
+            },
+            "curated": {
+                "base_path": str(tmp_path / "curated"),
+                "datasets": {
+                    "returns_1m": "returns_1m",
+                    "volatility_5m": "volatility_5m",
+                    "data_quality_metrics": "data_quality_metrics",
+                    "risk_summary": "risk_summary",
+                },
+            },
+            "format": "parquet",
+            "partitioning": {
+                "granularity": "hourly",
+            },
+        }
+    }
+    storage_config_path = tmp_path / "storage.yaml"
+    with storage_config_path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(storage_config, handle, sort_keys=False)
+
+    events = [
+        {
+            "event_id": "evt-1",
+            "symbol": "AAPL",
+            "price": 100.0,
+            "volume": 10,
+            "ts_event": "2025-01-20T10:01:00Z",
+            "ts_ingest": "2025-01-20T10:01:05Z",
+            "source": "stooq",
+        },
+        {
+            "event_id": "evt-2",
+            "symbol": "AAPL",
+            "price": 101.0,
+            "volume": 11,
+            "ts_event": "2025-01-20T10:02:00Z",
+            "ts_ingest": "2025-01-20T10:02:04Z",
+            "source": "stooq",
+        },
+    ]
+    input_path = tmp_path / "events.json"
+    with input_path.open("w", encoding="utf-8") as handle:
+        json.dump(events, handle)
+
+    locked_partition = "year=2025/month=01/day=20/hour=10"
+    lock_path = tmp_path / ".orchestration_locks" / locked_partition / ".lock"
+    lock_path.parent.mkdir(parents=True)
+    lock_path.write_text(
+        json.dumps(
+            {
+                "owner": "crashed:test",
+                "partition": locked_partition,
+                "acquired_at": (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat(),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    summary = run_pipeline(
+        input_path=input_path,
+        thresholds_path=Path("config/risk_thresholds.yaml"),
+        late_seconds=60,
+        window_minutes=5,
+        vol_window=2,
+        storage_config_path=storage_config_path,
+        lock_owner="backfill:test",
+        lock_stale_seconds=3600,
+    )
+
+    assert summary["raw_events"] == 2
+    assert not lock_path.exists()

@@ -68,6 +68,11 @@ def _parse_args() -> argparse.Namespace:
         default=Path("config/storage.yaml"),
         help="Path to storage configuration YAML.",
     )
+    parser.add_argument(
+        "--lock-stale-seconds",
+        type=int,
+        help="Replace existing partition locks older than this many seconds.",
+    )
     return parser.parse_args()
 
 
@@ -168,6 +173,7 @@ def run_pipeline(
     vol_window: int,
     storage_config_path: Path,
     lock_owner: str | None = None,
+    lock_stale_seconds: int | None = None,
 ) -> dict[str, Any]:
     raw_payloads = _load_input(input_path)
     storage_config = load_storage_config(storage_config_path)
@@ -281,6 +287,7 @@ def run_pipeline(
             Path(storage_config["storage"]["base_dir"]),
             partitions,
             lock_owner or "live",
+            stale_after_seconds=lock_stale_seconds,
         )
 
         raw_written = write_records(
@@ -343,6 +350,7 @@ def main() -> None:
         window_minutes=args.window_minutes,
         vol_window=args.vol_window,
         storage_config_path=args.storage_config,
+        lock_stale_seconds=args.lock_stale_seconds,
     )
     if args.summary_json is not None:
         with args.summary_json.open("w", encoding="utf-8") as handle:

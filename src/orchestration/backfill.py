@@ -126,6 +126,7 @@ def run_backfill(
     vol_window: int = 5,
     storage_config_path: Path = _DEFAULT_STORAGE_CONFIG_PATH,
     resume: bool = True,
+    lock_stale_seconds: int | None = None,
 ) -> list[dict[str, Any]]:
     start_ts = _parse_datetime(start_date)
     end_ts = _parse_datetime(end_date)
@@ -189,6 +190,7 @@ def run_backfill(
                     vol_window=vol_window,
                     storage_config_path=storage_config_path,
                     lock_owner=f"backfill:{run_id}:{partition}",
+                    lock_stale_seconds=lock_stale_seconds,
                 )
                 replay_summaries.append(
                     {
