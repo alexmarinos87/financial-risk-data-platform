@@ -8,11 +8,12 @@ from typing import Any
 
 import pandas as pd
 
-from ..analytics.data_quality import late_rate
+from ..analytics.data_quality import late_rate, required_field_metrics
 from ..analytics.risk_metrics import value_at_risk
 from ..analytics.returns import compute_returns
 from ..analytics.volatility import rolling_volatility
 from ..common.config import load_yaml
+from ..common.exceptions import ValidationError
 from ..ingestion.schemas import MarketEvent
 from ..processing.deduplicator import dedupe_events
 from ..processing.normaliser import normalize_symbol
@@ -178,6 +179,18 @@ def run_pipeline(
     raw_payloads = _load_input(input_path)
     storage_config = load_storage_config(storage_config_path)
 
+    required_field_quality = required_field_metrics(raw_payloads, REQUIRED_FIELDS)
+    if required_field_quality["failed_record_count"]:
+        missing_by_field = {
+            field: count
+            for field, count in required_field_quality["missing_by_field"].items()
+            if count
+        }
+        raise ValidationError(
+            "Missing required fields in "
+            f"{required_field_quality['failed_record_count']} records: {missing_by_field}"
+        )
+
     validated = [_validate_and_normalize(payload) for payload in raw_payloads]
     deduped = dedupe_events(validated, key="event_id")
 
@@ -259,6 +272,14 @@ def run_pipeline(
             "late_events": late_count,
             "late_rate": late_rate_value,
             "duplicate_rate": duplicate_rate,
+            "required_fields_checked": required_field_quality["required_fields_checked"],
+            "missing_required_field_count": required_field_quality["missing_field_count"],
+            "missing_required_record_count": required_field_quality["failed_record_count"],
+            "missing_required_fields_by_name": json.dumps(
+                required_field_quality["missing_by_field"],
+                sort_keys=True,
+            ),
+            "required_fields_status": required_field_quality["status"],
             "late_status": late_status,
             "duplicate_status": duplicate_status,
             "ts_ingest": metric_ts,
@@ -333,6 +354,9 @@ def run_pipeline(
         "partitions": partitions,
         "late_rate": late_rate_value,
         "duplicate_rate": duplicate_rate,
+        "required_fields_status": required_field_quality["status"],
+        "missing_required_field_count": required_field_quality["missing_field_count"],
+        "missing_required_record_count": required_field_quality["failed_record_count"],
         "volatility_latest": volatility_latest,
         "value_at_risk": var_latest,
         "volatility_status": volatility_status,
