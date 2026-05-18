@@ -23,7 +23,7 @@
 
 ## Data Quality Metrics
 
-`data_quality_metrics` includes required-field validation evidence for each pipeline run:
+`data_quality_metrics` includes required-field and null-rate validation evidence for each pipeline run:
 
 ```json
 {
@@ -31,6 +31,13 @@
   "missing_required_field_count": 0,
   "missing_required_record_count": 0,
   "missing_required_fields_by_name": "{\"event_id\": 0, \"price\": 0, \"source\": 0, \"symbol\": 0, \"ts_event\": 0, \"ts_ingest\": 0, \"volume\": 0}",
-  "required_fields_status": "ok"
+  "required_fields_status": "ok",
+  "null_fields_checked": 7,
+  "null_field_count": 0,
+  "null_record_count": 0,
+  "max_null_rate": 0.0,
+  "null_fields_by_name": "{\"event_id\": 0, \"price\": 0, \"source\": 0, \"symbol\": 0, \"ts_event\": 0, \"ts_ingest\": 0, \"volume\": 0}",
+  "null_rates_by_name": "{\"event_id\": 0.0, \"price\": 0.0, \"source\": 0.0, \"symbol\": 0.0, \"ts_event\": 0.0, \"ts_ingest\": 0.0, \"volume\": 0.0}",
+  "null_rate_status": "ok"
 }
 ```

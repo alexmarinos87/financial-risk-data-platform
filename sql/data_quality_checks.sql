@@ -6,6 +6,14 @@ SELECT
   required_fields_checked,
   missing_required_field_count,
   missing_required_record_count,
-  missing_required_fields_by_name
+  missing_required_fields_by_name,
+  null_rate_status,
+  null_fields_checked,
+  null_field_count,
+  null_record_count,
+  max_null_rate,
+  null_fields_by_name,
+  null_rates_by_name
 FROM data_quality_metrics
-WHERE required_fields_status <> 'ok';
+WHERE required_fields_status <> 'ok'
+  OR null_rate_status <> 'ok';

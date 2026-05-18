@@ -8,7 +8,7 @@ from typing import Any
 
 import pandas as pd
 
-from ..analytics.data_quality import late_rate, required_field_metrics
+from ..analytics.data_quality import late_rate, null_field_metrics, required_field_metrics
 from ..analytics.risk_metrics import value_at_risk
 from ..analytics.returns import compute_returns
 from ..analytics.volatility import rolling_volatility
@@ -191,6 +191,16 @@ def run_pipeline(
             f"{required_field_quality['failed_record_count']} records: {missing_by_field}"
         )
 
+    null_field_quality = null_field_metrics(raw_payloads, REQUIRED_FIELDS)
+    if null_field_quality["failed_record_count"]:
+        nulls_by_field = {
+            field: count for field, count in null_field_quality["nulls_by_field"].items() if count
+        }
+        raise ValidationError(
+            "Null required field values in "
+            f"{null_field_quality['failed_record_count']} records: {nulls_by_field}"
+        )
+
     validated = [_validate_and_normalize(payload) for payload in raw_payloads]
     deduped = dedupe_events(validated, key="event_id")
 
@@ -280,6 +290,19 @@ def run_pipeline(
                 sort_keys=True,
             ),
             "required_fields_status": required_field_quality["status"],
+            "null_fields_checked": null_field_quality["fields_checked"],
+            "null_field_count": null_field_quality["null_field_count"],
+            "null_record_count": null_field_quality["failed_record_count"],
+            "max_null_rate": null_field_quality["max_null_rate"],
+            "null_fields_by_name": json.dumps(
+                null_field_quality["nulls_by_field"],
+                sort_keys=True,
+            ),
+            "null_rates_by_name": json.dumps(
+                null_field_quality["null_rates_by_field"],
+                sort_keys=True,
+            ),
+            "null_rate_status": null_field_quality["status"],
             "late_status": late_status,
             "duplicate_status": duplicate_status,
             "ts_ingest": metric_ts,
@@ -357,6 +380,10 @@ def run_pipeline(
         "required_fields_status": required_field_quality["status"],
         "missing_required_field_count": required_field_quality["missing_field_count"],
         "missing_required_record_count": required_field_quality["failed_record_count"],
+        "null_rate_status": null_field_quality["status"],
+        "null_field_count": null_field_quality["null_field_count"],
+        "null_record_count": null_field_quality["failed_record_count"],
+        "max_null_rate": null_field_quality["max_null_rate"],
         "volatility_latest": volatility_latest,
         "value_at_risk": var_latest,
         "volatility_status": volatility_status,
