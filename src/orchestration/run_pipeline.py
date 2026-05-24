@@ -8,7 +8,12 @@ from typing import Any
 
 import pandas as pd
 
-from ..analytics.data_quality import late_rate, null_field_metrics, required_field_metrics
+from ..analytics.data_quality import (
+    late_rate,
+    null_field_metrics,
+    numeric_range_metrics,
+    required_field_metrics,
+)
 from ..analytics.risk_metrics import value_at_risk
 from ..analytics.returns import compute_returns
 from ..analytics.volatility import rolling_volatility
@@ -25,6 +30,10 @@ from ..storage.storage_config import load_storage_config
 from .locks import acquire_partition_locks, release_partition_locks
 
 REQUIRED_FIELDS = ["event_id", "symbol", "price", "volume", "ts_event", "ts_ingest", "source"]
+VALUE_RULES = {
+    "price": {"min_exclusive": 0.0},
+    "volume": {"min_inclusive": 0.0},
+}
 
 
 def _parse_args() -> argparse.Namespace:
@@ -201,6 +210,16 @@ def run_pipeline(
             f"{null_field_quality['failed_record_count']} records: {nulls_by_field}"
         )
 
+    value_quality = numeric_range_metrics(raw_payloads, VALUE_RULES)
+    if value_quality["failed_record_count"]:
+        invalid_by_field = {
+            field: count for field, count in value_quality["invalid_by_field"].items() if count
+        }
+        raise ValidationError(
+            "Invalid numeric field values in "
+            f"{value_quality['failed_record_count']} records: {invalid_by_field}"
+        )
+
     validated = [_validate_and_normalize(payload) for payload in raw_payloads]
     deduped = dedupe_events(validated, key="event_id")
 
@@ -303,6 +322,14 @@ def run_pipeline(
                 sort_keys=True,
             ),
             "null_rate_status": null_field_quality["status"],
+            "value_fields_checked": value_quality["fields_checked"],
+            "invalid_value_count": value_quality["invalid_field_count"],
+            "invalid_value_record_count": value_quality["failed_record_count"],
+            "invalid_values_by_name": json.dumps(
+                value_quality["invalid_by_field"],
+                sort_keys=True,
+            ),
+            "value_validity_status": value_quality["status"],
             "late_status": late_status,
             "duplicate_status": duplicate_status,
             "ts_ingest": metric_ts,
@@ -384,6 +411,9 @@ def run_pipeline(
         "null_field_count": null_field_quality["null_field_count"],
         "null_record_count": null_field_quality["failed_record_count"],
         "max_null_rate": null_field_quality["max_null_rate"],
+        "value_validity_status": value_quality["status"],
+        "invalid_value_count": value_quality["invalid_field_count"],
+        "invalid_value_record_count": value_quality["failed_record_count"],
         "volatility_latest": volatility_latest,
         "value_at_risk": var_latest,
         "volatility_status": volatility_status,
