@@ -151,6 +151,9 @@ def test_run_pipeline_materializes_all_curated_datasets(tmp_path: Path) -> None:
     assert summary["null_field_count"] == 0
     assert summary["null_record_count"] == 0
     assert summary["max_null_rate"] == 0.0
+    assert summary["value_validity_status"] == "ok"
+    assert summary["invalid_value_count"] == 0
+    assert summary["invalid_value_record_count"] == 0
     assert set(summary["volatility_latest"]) == {"AAPL", "MSFT"}
     assert set(summary["value_at_risk"]) == {"AAPL", "MSFT"}
 
@@ -169,6 +172,10 @@ def test_run_pipeline_materializes_all_curated_datasets(tmp_path: Path) -> None:
     assert data_quality_rows[0]["null_field_count"] == 0
     assert data_quality_rows[0]["null_record_count"] == 0
     assert data_quality_rows[0]["max_null_rate"] == 0.0
+    assert data_quality_rows[0]["value_validity_status"] == "ok"
+    assert data_quality_rows[0]["value_fields_checked"] == 2
+    assert data_quality_rows[0]["invalid_value_count"] == 0
+    assert data_quality_rows[0]["invalid_value_record_count"] == 0
 
 
 def test_run_pipeline_rejects_missing_required_fields(tmp_path: Path) -> None:
@@ -284,6 +291,77 @@ def test_run_pipeline_rejects_null_required_fields(tmp_path: Path) -> None:
         json.dump(events, handle)
 
     with pytest.raises(ValidationError, match="Null required field values in 1 records"):
+        run_pipeline(
+            input_path=input_path,
+            thresholds_path=Path("config/risk_thresholds.yaml"),
+            late_seconds=60,
+            window_minutes=5,
+            vol_window=2,
+            storage_config_path=storage_config_path,
+        )
+
+
+def test_run_pipeline_rejects_invalid_numeric_field_values(tmp_path: Path) -> None:
+    storage_config = {
+        "storage": {
+            "base_dir": str(tmp_path),
+            "raw": {
+                "base_path": str(tmp_path / "raw"),
+                "dataset": "market_events",
+            },
+            "curated": {
+                "base_path": str(tmp_path / "curated"),
+                "datasets": {
+                    "returns_1m": "returns_1m",
+                    "volatility_5m": "volatility_5m",
+                    "data_quality_metrics": "data_quality_metrics",
+                    "risk_summary": "risk_summary",
+                },
+            },
+            "format": "parquet",
+            "partitioning": {
+                "granularity": "hourly",
+            },
+        }
+    }
+    storage_config_path = tmp_path / "storage.yaml"
+    with storage_config_path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(storage_config, handle, sort_keys=False)
+
+    events = [
+        {
+            "event_id": "evt-1",
+            "symbol": "AAPL",
+            "price": 100.0,
+            "volume": 10,
+            "ts_event": "2025-01-20T10:01:00Z",
+            "ts_ingest": "2025-01-20T10:01:05Z",
+            "source": "stooq",
+        },
+        {
+            "event_id": "evt-2",
+            "symbol": "AAPL",
+            "price": 0.0,
+            "volume": 11,
+            "ts_event": "2025-01-20T10:02:00Z",
+            "ts_ingest": "2025-01-20T10:02:04Z",
+            "source": "stooq",
+        },
+        {
+            "event_id": "evt-3",
+            "symbol": "MSFT",
+            "price": 240.0,
+            "volume": -1,
+            "ts_event": "2025-01-20T10:03:00Z",
+            "ts_ingest": "2025-01-20T10:03:04Z",
+            "source": "stooq",
+        },
+    ]
+    input_path = tmp_path / "events.json"
+    with input_path.open("w", encoding="utf-8") as handle:
+        json.dump(events, handle)
+
+    with pytest.raises(ValidationError, match="Invalid numeric field values in 2 records"):
         run_pipeline(
             input_path=input_path,
             thresholds_path=Path("config/risk_thresholds.yaml"),

@@ -13,7 +13,13 @@ SELECT
   null_record_count,
   max_null_rate,
   null_fields_by_name,
-  null_rates_by_name
+  null_rates_by_name,
+  value_validity_status,
+  value_fields_checked,
+  invalid_value_count,
+  invalid_value_record_count,
+  invalid_values_by_name
 FROM data_quality_metrics
 WHERE required_fields_status <> 'ok'
-  OR null_rate_status <> 'ok';
+  OR null_rate_status <> 'ok'
+  OR value_validity_status <> 'ok';
