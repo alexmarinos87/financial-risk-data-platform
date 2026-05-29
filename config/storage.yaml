@@ -10,6 +10,7 @@ storage:
       volatility_5m: "volatility_5m"
       data_quality_metrics: "data_quality_metrics"
       risk_summary: "risk_summary"
+      external_signal_summary: "external_signal_summary"
   format: "parquet"
   partitioning:
     granularity: "hourly"
