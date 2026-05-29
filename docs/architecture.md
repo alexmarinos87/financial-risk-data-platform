@@ -12,3 +12,9 @@ The design emphasizes:
 1. Reproducibility and deterministic backfills
 2. Explicit trade-offs between cost and latency
 3. Strong schema validation at ingestion
+
+## Deployment Model
+
+The deploy scaffold packages the pipeline as a Docker image and runs it as a
+Kubernetes CronJob. GitHub Actions builds and pushes immutable images to ECR,
+then applies the matching Kustomize overlay for the selected environment.

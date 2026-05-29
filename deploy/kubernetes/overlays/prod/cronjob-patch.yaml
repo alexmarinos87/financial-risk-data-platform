@@ -1,0 +1,7 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: risk-pipeline-live
+spec:
+  schedule: "*/15 * * * *"
+  suspend: false
