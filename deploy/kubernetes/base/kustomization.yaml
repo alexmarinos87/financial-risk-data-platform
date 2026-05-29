@@ -1,0 +1,21 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+commonLabels:
+  app.kubernetes.io/name: financial-risk-data-platform
+  app.kubernetes.io/part-of: financial-risk-data-platform
+
+resources:
+  - service-account.yaml
+  - cronjob-live.yaml
+  - network-policy.yaml
+
+configMapGenerator:
+  - name: risk-config
+    files:
+      - storage.yaml=../../../config/storage.yaml
+      - risk_thresholds.yaml=../../../config/risk_thresholds.yaml
+      - symbols.yaml=../../../config/symbols.yaml
+
+generatorOptions:
+  disableNameSuffixHash: true

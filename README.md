@@ -63,6 +63,11 @@ See `docs/data-model.md` for event schemas.
 
 See `docs/architecture.md` for the end-to-end design.
 
+## Deployment
+
+The deployment scaffold uses Docker, GitHub Actions, Amazon ECR, and Kubernetes
+CronJobs with separate `dev` and `prod` overlays. See `deploy/README.md`.
+
 ## Notes
 
 This is a portfolio-grade platform scaffold. All modules are intentionally small but structured for expansion.
