@@ -19,6 +19,10 @@ from ..analytics.returns import compute_returns
 from ..analytics.volatility import rolling_volatility
 from ..common.config import load_yaml
 from ..common.exceptions import ValidationError
+from ..ingestion.external_signal_producer import (
+    external_signals_to_records,
+    load_external_signals,
+)
 from ..ingestion.schemas import MarketEvent
 from ..processing.deduplicator import dedupe_events
 from ..processing.normaliser import normalize_symbol
@@ -42,6 +46,11 @@ def _parse_args() -> argparse.Namespace:
         "--input",
         type=Path,
         help="Optional path to a JSON list of market events.",
+    )
+    parser.add_argument(
+        "--signals",
+        type=Path,
+        help="Optional path to CSV, JSON, JSONL, or NDJSON external risk signals.",
     )
     parser.add_argument(
         "--thresholds",
@@ -147,6 +156,12 @@ def _load_input(path: Path | None) -> list[dict[str, Any]]:
     return data
 
 
+def _load_external_signal_records(path: Path | None) -> list[dict[str, Any]]:
+    if path is None:
+        return []
+    return external_signals_to_records(load_external_signals(path))
+
+
 def _validate_and_normalize(payload: dict[str, Any]) -> dict[str, Any]:
     require_fields(payload, REQUIRED_FIELDS)
     payload = dict(payload)
@@ -175,6 +190,62 @@ def _latest_metric_timestamp(events: list[dict[str, Any]]) -> datetime:
     return max(event["ts_ingest"] for event in events)
 
 
+def _latest_external_signal_summary(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    latest_by_signal: dict[tuple[str, str], dict[str, Any]] = {}
+    for record in records:
+        key = (record["name"], record["source"])
+        current = latest_by_signal.get(key)
+        if current is None or (
+            record["ts_event"],
+            record["ts_ingest"],
+            record["signal_id"],
+        ) > (
+            current["ts_event"],
+            current["ts_ingest"],
+            current["signal_id"],
+        ):
+            latest_by_signal[key] = record
+
+    return [
+        {
+            "name": record["name"],
+            "source": record["source"],
+            "latest_value": record["value"],
+            "latest_signal_id": record["signal_id"],
+            "latest_ts_event": record["ts_event"],
+            "ts_ingest": record["ts_ingest"],
+        }
+        for record in sorted(
+            latest_by_signal.values(),
+            key=lambda item: (item["name"], item["source"]),
+        )
+    ]
+
+
+def _latest_external_signal_context(records: list[dict[str, Any]]) -> dict[str, Any]:
+    context: dict[str, Any] = {"external_signal_count": len(records)}
+    if not records:
+        return context
+
+    latest = max(
+        records,
+        key=lambda record: (
+            record["ts_event"],
+            record["ts_ingest"],
+            record["signal_id"],
+        ),
+    )
+    context.update(
+        {
+            "latest_external_signal_name": latest["name"],
+            "latest_external_signal_value": latest["value"],
+            "latest_external_signal_source": latest["source"],
+            "latest_external_signal_ts_event": latest["ts_event"],
+        }
+    )
+    return context
+
+
 def run_pipeline(
     input_path: Path | None,
     thresholds_path: Path,
@@ -182,10 +253,12 @@ def run_pipeline(
     window_minutes: int,
     vol_window: int,
     storage_config_path: Path,
+    signals_path: Path | None = None,
     lock_owner: str | None = None,
     lock_stale_seconds: int | None = None,
 ) -> dict[str, Any]:
     raw_payloads = _load_input(input_path)
+    external_signal_records = _load_external_signal_records(signals_path)
     storage_config = load_storage_config(storage_config_path)
 
     required_field_quality = required_field_metrics(raw_payloads, REQUIRED_FIELDS)
@@ -292,7 +365,9 @@ def run_pipeline(
     }
 
     raw_dataset = storage_config["storage"]["raw"]["dataset"]
-    metric_ts = _latest_metric_timestamp(deduped)
+    external_signal_summary_records = _latest_external_signal_summary(external_signal_records)
+    external_signal_context = _latest_external_signal_context(external_signal_records)
+    metric_ts = _latest_metric_timestamp([*deduped, *external_signal_records])
     data_quality_records = [
         {
             "total_events": total_events,
@@ -347,11 +422,20 @@ def run_pipeline(
             "late_status": late_status,
             "duplicate_status": duplicate_status,
             "ts_ingest": metric_ts,
+            **external_signal_context,
         }
         for symbol in risk_symbols
     ]
 
-    partitions = sorted({partition_path(event["ts_ingest"]) for event in deduped})
+    records_to_lock = [
+        *deduped,
+        *returns_records,
+        *volatility_records,
+        *data_quality_records,
+        *risk_summary_records,
+        *external_signal_summary_records,
+    ]
+    partitions = sorted({partition_path(record["ts_ingest"]) for record in records_to_lock})
     lock_paths: list[Path] = []
     try:
         lock_paths = acquire_partition_locks(
@@ -393,6 +477,13 @@ def run_pipeline(
                 storage_config=storage_config,
             ),
         }
+        if external_signal_summary_records:
+            curated_writes["external_signal_summary"] = write_records(
+                external_signal_summary_records,
+                kind="curated",
+                dataset="external_signal_summary",
+                storage_config=storage_config,
+            )
         curated_written = sum(curated_writes.values())
     finally:
         release_partition_locks(lock_paths)
@@ -419,6 +510,10 @@ def run_pipeline(
         "volatility_status": volatility_status,
         "late_status": late_status,
         "duplicate_status": duplicate_status,
+        "external_signal_count": len(external_signal_records),
+        "external_signals_latest": {
+            record["name"]: record["latest_value"] for record in external_signal_summary_records
+        },
     }
 
 
@@ -426,6 +521,7 @@ def main() -> None:
     args = _parse_args()
     summary = run_pipeline(
         input_path=args.input,
+        signals_path=args.signals,
         thresholds_path=args.thresholds,
         late_seconds=args.late_seconds,
         window_minutes=args.window_minutes,
@@ -449,6 +545,7 @@ def main() -> None:
     print(f"Volatility latest: {summary['volatility_latest']}")
     print(f"Volatility status: {summary['volatility_status']}")
     print(f"Value-at-Risk (95%): {summary['value_at_risk']}")
+    print(f"External signals: {summary['external_signal_count']}")
 
 
 if __name__ == "__main__":

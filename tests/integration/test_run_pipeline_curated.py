@@ -518,3 +518,123 @@ def test_run_pipeline_replaces_stale_partition_lock(tmp_path: Path) -> None:
 
     assert summary["raw_events"] == 2
     assert not lock_path.exists()
+
+
+def test_run_pipeline_materializes_external_signal_summary(tmp_path: Path) -> None:
+    storage_config = {
+        "storage": {
+            "base_dir": str(tmp_path),
+            "raw": {
+                "base_path": str(tmp_path / "raw"),
+                "dataset": "market_events",
+            },
+            "curated": {
+                "base_path": str(tmp_path / "curated"),
+                "datasets": {
+                    "returns_1m": "returns_1m",
+                    "volatility_5m": "volatility_5m",
+                    "data_quality_metrics": "data_quality_metrics",
+                    "risk_summary": "risk_summary",
+                    "external_signal_summary": "external_signal_summary",
+                },
+            },
+            "format": "parquet",
+            "partitioning": {
+                "granularity": "hourly",
+            },
+        }
+    }
+    storage_config_path = tmp_path / "storage.yaml"
+    with storage_config_path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(storage_config, handle, sort_keys=False)
+
+    events = [
+        {
+            "event_id": "evt-1",
+            "symbol": "AAPL",
+            "price": 100.0,
+            "volume": 10,
+            "ts_event": "2025-01-20T10:01:00Z",
+            "ts_ingest": "2025-01-20T10:01:05Z",
+            "source": "stooq",
+        },
+        {
+            "event_id": "evt-2",
+            "symbol": "AAPL",
+            "price": 101.0,
+            "volume": 11,
+            "ts_event": "2025-01-20T10:02:00Z",
+            "ts_ingest": "2025-01-20T10:02:04Z",
+            "source": "stooq",
+        },
+        {
+            "event_id": "evt-3",
+            "symbol": "AAPL",
+            "price": 102.0,
+            "volume": 12,
+            "ts_event": "2025-01-20T10:03:00Z",
+            "ts_ingest": "2025-01-20T10:03:04Z",
+            "source": "stooq",
+        },
+    ]
+    signals = [
+        {
+            "signal_id": "sig-vix-1",
+            "name": "vix",
+            "value": 18.4,
+            "ts_event": "2025-01-20T10:01:00Z",
+            "ts_ingest": "2025-01-20T10:01:10Z",
+            "source": "cboe",
+        },
+        {
+            "signal_id": "sig-vix-2",
+            "name": "vix",
+            "value": 19.1,
+            "ts_event": "2025-01-20T10:04:00Z",
+            "ts_ingest": "2025-01-20T10:04:10Z",
+            "source": "cboe",
+        },
+        {
+            "signal_id": "sig-spread-1",
+            "name": "credit-spread",
+            "value": 1.25,
+            "ts_event": "2025-01-20T10:02:00Z",
+            "ts_ingest": "2025-01-20T10:02:10Z",
+            "source": "fred",
+        },
+    ]
+    input_path = tmp_path / "events.json"
+    signals_path = tmp_path / "signals.json"
+    with input_path.open("w", encoding="utf-8") as handle:
+        json.dump(events, handle)
+    with signals_path.open("w", encoding="utf-8") as handle:
+        json.dump(signals, handle)
+
+    summary = run_pipeline(
+        input_path=input_path,
+        signals_path=signals_path,
+        thresholds_path=Path("config/risk_thresholds.yaml"),
+        late_seconds=60,
+        window_minutes=5,
+        vol_window=2,
+        storage_config_path=storage_config_path,
+    )
+
+    assert summary["external_signal_count"] == 3
+    assert summary["external_signals_latest"] == {
+        "CREDIT_SPREAD": 1.25,
+        "VIX": 19.1,
+    }
+    assert summary["curated_records_by_dataset"]["external_signal_summary"] == 2
+
+    signal_rows = _read_parquet_rows(tmp_path / "curated" / "external_signal_summary")
+    signal_by_name = {row["name"]: row for row in signal_rows}
+    assert set(signal_by_name) == {"CREDIT_SPREAD", "VIX"}
+    assert signal_by_name["VIX"]["latest_signal_id"] == "sig-vix-2"
+    assert signal_by_name["VIX"]["latest_value"] == 19.1
+
+    risk_rows = _read_parquet_rows(tmp_path / "curated" / "risk_summary")
+    assert risk_rows[0]["external_signal_count"] == 3
+    assert risk_rows[0]["latest_external_signal_name"] == "VIX"
+    assert risk_rows[0]["latest_external_signal_value"] == 19.1
+    assert risk_rows[0]["latest_external_signal_source"] == "cboe"

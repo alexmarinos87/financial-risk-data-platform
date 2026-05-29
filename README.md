@@ -41,6 +41,14 @@ Provide your own JSON events (list of objects) if desired:
 python -m src.orchestration.run_pipeline --input tests/fixtures/sample_events.json
 ```
 
+Include landed external risk signals to enrich the risk summary:
+
+```bash
+python -m src.orchestration.run_pipeline \
+  --input tests/fixtures/sample_events.json \
+  --signals path/to/signals.json
+```
+
 ## Data Sources
 
 This project is designed for free, legal, and finance-credible sources. Examples:

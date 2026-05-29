@@ -14,12 +14,32 @@
 }
 ```
 
+## External Signal Schema
+
+```json
+{
+  "signal_id": "uuid",
+  "name": "VIX",
+  "value": 18.4,
+  "ts_event": "2025-01-20T10:01:00Z",
+  "ts_ingest": "2025-01-20T10:01:03Z",
+  "source": "cboe"
+}
+```
+
 ## Curated Outputs
 
 1. returns_1m
 2. volatility_5m
 3. data_quality_metrics
 4. risk_summary
+5. external_signal_summary
+
+## External Signal Summary
+
+`external_signal_summary` stores the latest value for each signal name and source included
+in a pipeline run. `risk_summary` rows include the total external signal count and latest
+signal context when a signal input is supplied.
 
 ## Data Quality Metrics
 
