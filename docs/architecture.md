@@ -12,6 +12,7 @@ The design emphasizes:
 1. Reproducibility and deterministic backfills
 2. Explicit trade-offs between cost and latency
 3. Strong schema validation at ingestion
+4. Measurable storage and query performance improvements
 
 ## Deployment Model
 
