@@ -63,6 +63,16 @@ See `docs/data-model.md` for event schemas.
 
 See `docs/architecture.md` for the end-to-end design.
 
+## Performance Benchmark
+
+Run the local I/O benchmark to compare CSV scans with partitioned Parquet scans:
+
+```bash
+make benchmark-io
+```
+
+See `docs/performance-benchmark.md` for details.
+
 ## Deployment
 
 The deployment scaffold uses Docker, GitHub Actions, Amazon ECR, and Kubernetes
