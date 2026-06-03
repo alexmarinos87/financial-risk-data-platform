@@ -530,6 +530,7 @@ def main() -> None:
         lock_stale_seconds=args.lock_stale_seconds,
     )
     if args.summary_json is not None:
+        args.summary_json.parent.mkdir(parents=True, exist_ok=True)
         with args.summary_json.open("w", encoding="utf-8") as handle:
             json.dump(summary, handle, indent=2, sort_keys=True, default=str)
 

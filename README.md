@@ -21,10 +21,20 @@ This repo is intentionally structured to resemble real internal data platforms a
 Example commands:
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -e .
-pytest -q
+make setup
+make test
+```
+
+The Makefile uses `.venv/bin/python` by default, so commands can be run
+without activating the virtual environment after `make setup`.
+
+If you prefer to run the commands manually:
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install --upgrade pip
+.venv/bin/python -m pip install -e '.[dev]'
+.venv/bin/python -m pytest -q
 ```
 
 ## Run The Demo Pipeline
@@ -32,19 +42,31 @@ pytest -q
 Run a local end-to-end pipeline with a small sample dataset:
 
 ```bash
-python -m src.orchestration.run_pipeline
+.venv/bin/python -m src.orchestration.run_pipeline
 ```
 
 Provide your own JSON events (list of objects) if desired:
 
 ```bash
-python -m src.orchestration.run_pipeline --input tests/fixtures/sample_events.json
+.venv/bin/python -m src.orchestration.run_pipeline --input tests/fixtures/sample_events.json
+```
+
+For a fuller local walkthrough with duplicates, a late event, and curated
+metrics:
+
+```bash
+make clean-generated
+.venv/bin/python -m src.orchestration.run_pipeline \
+  --input tests/fixtures/demo_events.json \
+  --late-seconds 60 \
+  --vol-window 2 \
+  --summary-json .demo/pipeline-summary.json
 ```
 
 Include landed external risk signals to enrich the risk summary:
 
 ```bash
-python -m src.orchestration.run_pipeline \
+.venv/bin/python -m src.orchestration.run_pipeline \
   --input tests/fixtures/sample_events.json \
   --signals path/to/signals.json
 ```
@@ -72,6 +94,14 @@ make benchmark-io
 ```
 
 See `docs/performance-benchmark.md` for details.
+
+## Generated Files
+
+Local pipeline runs write generated parquet output under `data/`. Demo summaries
+can be written under `.demo/`. Both paths are ignored by git so repeatable runs
+do not pollute commits. Keep reusable sample inputs under `tests/fixtures/`.
+Use `make clean-generated` to remove local outputs and caches before a fresh
+demo run.
 
 ## Deployment
 

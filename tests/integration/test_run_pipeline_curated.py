@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -10,6 +11,7 @@ import yaml
 
 from src.common.exceptions import OverlapError, ValidationError
 from src.orchestration.locks import acquire_partition_locks, release_partition_locks
+from src.orchestration.run_pipeline import main as run_pipeline_main
 from src.orchestration.run_pipeline import run_pipeline
 
 
@@ -29,6 +31,69 @@ def _read_parquet_rows(dataset_dir: Path) -> list[dict]:
     quoted = ", ".join(f"'{path}'" for path in escaped_paths)
     with duckdb.connect() as conn:
         return conn.execute(f"SELECT * FROM read_parquet([{quoted}])").df().to_dict("records")
+
+
+def test_run_pipeline_cli_creates_summary_parent_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    storage_config = {
+        "storage": {
+            "base_dir": str(tmp_path),
+            "raw": {
+                "base_path": str(tmp_path / "raw"),
+                "dataset": "market_events",
+            },
+            "curated": {
+                "base_path": str(tmp_path / "curated"),
+                "datasets": {
+                    "returns_1m": "returns_1m",
+                    "volatility_5m": "volatility_5m",
+                    "data_quality_metrics": "data_quality_metrics",
+                    "risk_summary": "risk_summary",
+                },
+            },
+            "format": "parquet",
+            "partitioning": {
+                "granularity": "hourly",
+            },
+        }
+    }
+    storage_config_path = tmp_path / "storage.yaml"
+    with storage_config_path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(storage_config, handle, sort_keys=False)
+
+    summary_path = tmp_path / ".demo" / "pipeline-summary.json"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_pipeline",
+            "--input",
+            "tests/fixtures/demo_events.json",
+            "--storage-config",
+            str(storage_config_path),
+            "--late-seconds",
+            "60",
+            "--vol-window",
+            "2",
+            "--summary-json",
+            str(summary_path),
+        ],
+    )
+
+    run_pipeline_main()
+
+    captured = capsys.readouterr()
+    assert "Pipeline run summary" in captured.out
+    with summary_path.open("r", encoding="utf-8") as handle:
+        summary = json.load(handle)
+    assert summary["raw_events"] == 6
+    assert summary["curated_records"] == 9
+    assert summary["required_fields_status"] == "ok"
+    assert summary["late_rate"] > 0.0
+    assert summary["duplicate_rate"] > 0.0
 
 
 def test_run_pipeline_materializes_all_curated_datasets(tmp_path: Path) -> None:
