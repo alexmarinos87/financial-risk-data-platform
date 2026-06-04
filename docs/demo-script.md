@@ -64,6 +64,14 @@ installation.
    The repo has automated tests, container packaging, and a Kubernetes CronJob
    deployment model with separate dev and prod overlays.
 
+7. Show the warehouse and orchestration mapping if the conversation goes there.
+
+   Point to `sql/postgres_schema.sql`, `sql/ops_queries.sql`,
+   `docs/elt-mapping.md`, `docs/source-document-mapping.md`, and
+   `docs/lambda-s3-orchestration.md`. These files explain how the local
+   pipeline maps to a connector-based ELT flow, nested upstream records,
+   PostgreSQL serving tables, and an S3/Lambda orchestration pattern.
+
 ## Questions To Be Ready For
 
 What happens if the upstream sends duplicates?
