@@ -74,6 +74,8 @@ installation.
 
 ## Questions To Be Ready For
 
+Use `docs/interview-stories.md` for the longer rehearsal versions.
+
 What happens if the upstream sends duplicates?
 
 The pipeline deduplicates on `event_id`, tracks duplicate rate in

@@ -95,7 +95,7 @@ Validation focus:
 
 Goal: rehearse concise stories rather than memorising code.
 
-Prepare four stories:
+Completed early on Friday 5 June 2026:
 
 1. Pipeline reliability.
 
@@ -124,6 +124,12 @@ Situation: what problem existed
 Decision: what design choice was made
 Trade-off: what was gained and what was accepted
 Result: how it can be observed or tested
+```
+
+Detailed rehearsal notes are in:
+
+```text
+docs/interview-stories.md
 ```
 
 ## Monday 8 June 2026

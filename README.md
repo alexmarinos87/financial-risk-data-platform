@@ -89,10 +89,11 @@ Additional preparation notes:
 
 1. `docs/demo-script.md` for a short technical walkthrough
 2. `docs/preparation-plan.md` for interview preparation
-3. `docs/elt-mapping.md` for connector-based ELT mapping
-4. `docs/source-document-mapping.md` for nested source document flattening
-5. `docs/lambda-s3-orchestration.md` for AWS orchestration mapping
-6. `sql/postgres_schema.sql` and `sql/ops_queries.sql` for PostgreSQL examples
+3. `docs/interview-stories.md` for interview story rehearsal
+4. `docs/elt-mapping.md` for connector-based ELT mapping
+5. `docs/source-document-mapping.md` for nested source document flattening
+6. `docs/lambda-s3-orchestration.md` for AWS orchestration mapping
+7. `sql/postgres_schema.sql` and `sql/ops_queries.sql` for PostgreSQL examples
 
 ## Performance Benchmark
 
