@@ -132,6 +132,19 @@ Detailed rehearsal notes are in:
 docs/interview-stories.md
 ```
 
+Sunday 7 June 2026 preparation completed early on Saturday 6 June 2026:
+
+1. Add a timed mock interview run plan.
+2. Prepare concise answers for common technical and behavioural questions.
+3. Add a self-scoring checklist for practice runs.
+4. Add a final polish checklist before Monday.
+
+Detailed mock-interview notes are in:
+
+```text
+docs/mock-interview.md
+```
+
 ## Monday 8 June 2026
 
 Goal: light review only.
@@ -141,7 +154,8 @@ Do:
 1. Run the demo once from a clean checkout state.
 2. Re-read `docs/demo-script.md`.
 3. Review the four interview stories.
-4. Prepare two questions for the interviewer.
+4. Run through `docs/mock-interview.md`.
+5. Prepare two questions for the interviewer.
 
 Do not:
 
