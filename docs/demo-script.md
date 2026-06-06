@@ -74,7 +74,8 @@ installation.
 
 ## Questions To Be Ready For
 
-Use `docs/interview-stories.md` for the longer rehearsal versions.
+Use `docs/interview-stories.md` for the longer rehearsal versions and
+`docs/mock-interview.md` for timed practice.
 
 What happens if the upstream sends duplicates?
 
