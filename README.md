@@ -93,8 +93,23 @@ Additional preparation notes:
 4. `docs/mock-interview.md` for timed interview practice
 5. `docs/elt-mapping.md` for connector-based ELT mapping
 6. `docs/source-document-mapping.md` for nested source document flattening
-7. `docs/lambda-s3-orchestration.md` for AWS orchestration mapping
-8. `sql/postgres_schema.sql` and `sql/ops_queries.sql` for PostgreSQL examples
+7. `docs/postgres-mongodb-walkthrough.md` for local source-to-warehouse inspection
+8. `docs/lambda-s3-orchestration.md` for AWS orchestration mapping
+9. `sql/postgres_schema.sql` and `sql/ops_queries.sql` for PostgreSQL examples
+
+## Local Database Playground
+
+An optional Docker Compose playground starts PostgreSQL and MongoDB with seeded
+demo data:
+
+```bash
+make local-db-up
+make postgres-shell
+make mongo-shell
+make local-db-down
+```
+
+See `docs/postgres-mongodb-walkthrough.md` for the inspection commands.
 
 ## Performance Benchmark
 

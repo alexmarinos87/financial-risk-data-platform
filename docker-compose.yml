@@ -1,0 +1,35 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: risk_platform
+      POSTGRES_USER: risk_user
+      POSTGRES_PASSWORD: risk_password
+    ports:
+      - "5433:5432"
+    volumes:
+      - ./sql/postgres_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+      - ./sql/postgres_demo_data.sql:/docker-entrypoint-initdb.d/02_demo_data.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U risk_user -d risk_platform"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  mongo:
+    image: mongo:7
+    environment:
+      MONGO_INITDB_DATABASE: risk_source
+    ports:
+      - "27018:27017"
+    volumes:
+      - ./mongo/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "mongosh --quiet --eval 'db.adminCommand({ ping: 1 }).ok' | grep 1",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
