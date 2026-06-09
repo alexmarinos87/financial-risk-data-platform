@@ -81,6 +81,70 @@ db.market_events_source.insertMany([
   },
   {
     _id: ObjectId("665f4a731d7f2d9f0a9d0103"),
+    eventId: "evt-3",
+    instrument: {
+      symbol: "AAPL",
+    },
+    trade: {
+      price: 102.0,
+      volume: 12,
+    },
+    timestamps: {
+      event: ISODate("2025-01-20T10:03:00Z"),
+      ingest: ISODate("2025-01-20T10:03:04Z"),
+    },
+    provider: "stooq",
+  },
+  {
+    _id: ObjectId("665f4a731d7f2d9f0a9d0104"),
+    eventId: "evt-4",
+    instrument: {
+      symbol: "MSFT",
+    },
+    trade: {
+      price: 240.0,
+      volume: 9,
+    },
+    timestamps: {
+      event: ISODate("2025-01-20T10:01:00Z"),
+      ingest: ISODate("2025-01-20T10:01:03Z"),
+    },
+    provider: "stooq",
+  },
+  {
+    _id: ObjectId("665f4a731d7f2d9f0a9d0105"),
+    eventId: "evt-5",
+    instrument: {
+      symbol: "MSFT",
+    },
+    trade: {
+      price: 242.0,
+      volume: 10,
+    },
+    timestamps: {
+      event: ISODate("2025-01-20T10:02:00Z"),
+      ingest: ISODate("2025-01-20T10:07:00Z"),
+    },
+    provider: "stooq",
+  },
+  {
+    _id: ObjectId("665f4a731d7f2d9f0a9d0106"),
+    eventId: "evt-6",
+    instrument: {
+      symbol: "MSFT",
+    },
+    trade: {
+      price: 241.0,
+      volume: 8,
+    },
+    timestamps: {
+      event: ISODate("2025-01-20T10:03:00Z"),
+      ingest: ISODate("2025-01-20T10:03:05Z"),
+    },
+    provider: "stooq",
+  },
+  {
+    _id: ObjectId("665f4a731d7f2d9f0a9d0107"),
     eventId: "evt-2",
     instrument: {
       symbol: "AAPL",

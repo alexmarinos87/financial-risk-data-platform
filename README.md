@@ -94,8 +94,10 @@ Additional preparation notes:
 5. `docs/elt-mapping.md` for connector-based ELT mapping
 6. `docs/source-document-mapping.md` for nested source document flattening
 7. `docs/postgres-mongodb-walkthrough.md` for local source-to-warehouse inspection
-8. `docs/lambda-s3-orchestration.md` for AWS orchestration mapping
-9. `sql/postgres_schema.sql` and `sql/ops_queries.sql` for PostgreSQL examples
+8. `docs/data-consistency-walkthrough.md` for source-to-warehouse reconciliation
+9. `docs/aws-managed-databases.md` for disabled-by-default RDS/Aurora/DocumentDB IaC
+10. `docs/lambda-s3-orchestration.md` for AWS orchestration mapping
+11. `sql/postgres_schema.sql` and `sql/ops_queries.sql` for PostgreSQL examples
 
 ## Local Database Playground
 
@@ -104,12 +106,14 @@ demo data:
 
 ```bash
 make local-db-up
+make consistency-demo
 make postgres-shell
 make mongo-shell
 make local-db-down
 ```
 
-See `docs/postgres-mongodb-walkthrough.md` for the inspection commands.
+See `docs/postgres-mongodb-walkthrough.md` for inspection commands and
+`docs/data-consistency-walkthrough.md` for the full reconciliation flow.
 
 ## Performance Benchmark
 
