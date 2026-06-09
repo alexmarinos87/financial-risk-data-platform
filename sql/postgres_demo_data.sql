@@ -31,9 +31,20 @@ CREATE TABLE IF NOT EXISTS staging.risk_summary_batch (
     latest_external_signal_ts_event TIMESTAMPTZ
 );
 
+CREATE TABLE IF NOT EXISTS staging.source_event_audit (
+    audit_id BIGSERIAL PRIMARY KEY,
+    source_name TEXT NOT NULL,
+    source_records INTEGER NOT NULL CHECK (source_records >= 0),
+    distinct_event_ids INTEGER NOT NULL CHECK (distinct_event_ids >= 0),
+    duplicate_records INTEGER NOT NULL CHECK (duplicate_records >= 0),
+    expected_late_events INTEGER NOT NULL CHECK (expected_late_events >= 0),
+    audit_ts TIMESTAMPTZ NOT NULL
+);
+
 TRUNCATE TABLE
     staging.market_events_raw_batch,
     staging.risk_summary_batch,
+    staging.source_event_audit,
     risk_platform.external_signal_summary,
     risk_platform.risk_summary,
     risk_platform.data_quality_metrics,
@@ -194,3 +205,20 @@ INSERT INTO staging.market_events_raw_batch (
 VALUES
     ('evt-6', 'msft', 241.0, 8, '2025-01-20T10:03:00Z', '2025-01-20T10:03:05Z', 'stooq'),
     ('evt-7', 'goog', 188.5, 15, '2025-01-20T10:04:00Z', '2025-01-20T10:04:03Z', 'stooq');
+
+INSERT INTO staging.source_event_audit (
+    source_name,
+    source_records,
+    distinct_event_ids,
+    duplicate_records,
+    expected_late_events,
+    audit_ts
+)
+VALUES (
+    'mongo.market_events_source',
+    7,
+    6,
+    1,
+    1,
+    '2025-01-20T10:07:00Z'
+);

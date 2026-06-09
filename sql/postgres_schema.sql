@@ -75,7 +75,8 @@ CREATE TABLE IF NOT EXISTS risk_platform.data_quality_metrics (
     late_status TEXT NOT NULL CHECK (late_status IN ('ok', 'warn', 'critical')),
     duplicate_status TEXT NOT NULL CHECK (duplicate_status IN ('ok', 'warn', 'critical')),
     ts_ingest TIMESTAMPTZ NOT NULL,
-    loaded_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    loaded_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (ts_ingest)
 );
 
 CREATE INDEX IF NOT EXISTS idx_data_quality_metrics_ingest_time

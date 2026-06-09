@@ -131,6 +131,25 @@ db.market_events_source.aggregate([
 This is the source-side version of the deduplication problem handled by the
 pipeline.
 
+Flatten source events into the pipeline input shape:
+
+```javascript
+db.market_events_source.aggregate([
+  {
+    $project: {
+      _id: 0,
+      event_id: "$eventId",
+      symbol: "$instrument.symbol",
+      price: "$trade.price",
+      volume: "$trade.volume",
+      ts_event: "$timestamps.event",
+      ts_ingest: "$timestamps.ingest",
+      source: "$provider"
+    }
+  }
+])
+```
+
 ## Inspect PostgreSQL Warehouse Tables
 
 Open a PostgreSQL shell:
@@ -267,3 +286,6 @@ MongoDB: source shape, nested, application-friendly, cursor-driven extraction
 PostgreSQL: serving shape, relational, query-friendly, constrained tables
 Pipeline: contract enforcement, quality checks, deduplication, replay
 ```
+
+For the full source-to-warehouse consistency loop, see
+`docs/data-consistency-walkthrough.md`.

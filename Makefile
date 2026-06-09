@@ -1,7 +1,9 @@
 PYTHON ?= .venv/bin/python
 PIP ?= $(PYTHON) -m pip
 
-.PHONY: setup lint test format benchmark-io docker-build k8s-render-dev k8s-render-prod clean-generated local-db-up local-db-down local-db-logs postgres-shell mongo-shell
+LOCAL_POSTGRES_DSN ?= postgresql://risk_user:risk_password@localhost:5433/risk_platform
+
+.PHONY: setup lint test format benchmark-io docker-build k8s-render-dev k8s-render-prod clean-generated local-db-up local-db-down local-db-wait local-db-logs postgres-shell mongo-shell run-demo load-postgres-demo load-postgres-dry-run check-postgres-consistency consistency-demo
 
 setup:
 	python3 -m venv .venv
@@ -38,6 +40,12 @@ local-db-up:
 local-db-down:
 	docker compose down -v
 
+local-db-wait:
+	@until docker compose exec -T postgres pg_isready -U risk_user -d risk_platform >/dev/null 2>&1; do \
+		echo "Waiting for PostgreSQL..."; \
+		sleep 1; \
+	done
+
 local-db-logs:
 	docker compose logs -f postgres mongo
 
@@ -46,3 +54,21 @@ postgres-shell:
 
 mongo-shell:
 	docker compose exec mongo mongosh risk_source
+
+run-demo:
+	$(PYTHON) -m src.orchestration.run_pipeline \
+		--input tests/fixtures/demo_events.json \
+		--late-seconds 60 \
+		--vol-window 2 \
+		--summary-json .demo/pipeline-summary.json
+
+load-postgres-demo:
+	$(PYTHON) -m src.warehouse.postgres_loader --dsn "$(LOCAL_POSTGRES_DSN)"
+
+load-postgres-dry-run:
+	$(PYTHON) -m src.warehouse.postgres_loader --dry-run
+
+check-postgres-consistency:
+	docker compose exec -T postgres psql -U risk_user -d risk_platform < sql/consistency_checks.sql
+
+consistency-demo: clean-generated run-demo local-db-wait load-postgres-demo check-postgres-consistency
