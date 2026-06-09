@@ -55,12 +55,7 @@ For a fuller local walkthrough with duplicates, a late event, and curated
 metrics:
 
 ```bash
-make clean-generated
-.venv/bin/python -m src.orchestration.run_pipeline \
-  --input tests/fixtures/demo_events.json \
-  --late-seconds 60 \
-  --vol-window 2 \
-  --summary-json .demo/pipeline-summary.json
+make readiness-check
 ```
 
 Include landed external risk signals to enrich the risk summary:
@@ -87,6 +82,7 @@ See `docs/architecture.md` for the end-to-end design.
 
 Additional preparation notes:
 
+0. `AGENTS.md` for durable project instructions used by coding agents
 1. `docs/demo-script.md` for a short technical walkthrough
 2. `docs/preparation-plan.md` for interview preparation
 3. `docs/interview-stories.md` for interview story rehearsal
@@ -98,6 +94,8 @@ Additional preparation notes:
 9. `docs/aws-managed-databases.md` for disabled-by-default RDS/Aurora/DocumentDB IaC
 10. `docs/lambda-s3-orchestration.md` for AWS orchestration mapping
 11. `sql/postgres_schema.sql` and `sql/ops_queries.sql` for PostgreSQL examples
+12. `docs/agentic-workflows.md` for larger delegated development workflows
+13. `docs/engineering-delivery-workflow.md` for the engineer-owned delivery model
 
 ## Local Database Playground
 
