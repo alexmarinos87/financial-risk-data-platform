@@ -3,7 +3,7 @@ PIP ?= $(PYTHON) -m pip
 
 LOCAL_POSTGRES_DSN ?= postgresql://risk_user:risk_password@localhost:5433/risk_platform
 
-.PHONY: setup lint test format benchmark-io docker-build k8s-render-dev k8s-render-prod clean-generated local-db-up local-db-down local-db-wait local-db-logs postgres-shell mongo-shell run-demo load-postgres-demo load-postgres-dry-run check-postgres-consistency consistency-demo
+.PHONY: setup lint test format benchmark-io docker-build k8s-render-dev k8s-render-prod clean-generated readiness-check local-db-up local-db-down local-db-wait local-db-logs postgres-shell mongo-shell run-demo load-postgres-demo load-postgres-dry-run check-postgres-consistency consistency-demo
 
 setup:
 	python3 -m venv .venv
@@ -33,6 +33,8 @@ k8s-render-prod:
 
 clean-generated:
 	rm -rf data .demo .benchmarks .pytest_cache .mypy_cache .ruff_cache
+
+readiness-check: lint test clean-generated run-demo load-postgres-dry-run
 
 local-db-up:
 	docker compose up -d postgres mongo
