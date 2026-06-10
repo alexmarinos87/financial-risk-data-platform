@@ -6,7 +6,7 @@ services:
       POSTGRES_USER: risk_user
       POSTGRES_PASSWORD: risk_password
     ports:
-      - "5433:5432"
+      - "127.0.0.1:5433:5432"
     volumes:
       - ./sql/postgres_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
       - ./sql/postgres_demo_data.sql:/docker-entrypoint-initdb.d/02_demo_data.sql:ro
@@ -21,7 +21,7 @@ services:
     environment:
       MONGO_INITDB_DATABASE: risk_source
     ports:
-      - "27018:27017"
+      - "127.0.0.1:27018:27017"
     volumes:
       - ./mongo/init:/docker-entrypoint-initdb.d:ro
     healthcheck:

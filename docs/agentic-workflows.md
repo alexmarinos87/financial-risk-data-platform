@@ -75,6 +75,7 @@ Acceptance criteria:
 - Tests cover batch collection and upsert SQL generation.
 
 Validation:
+- make security-check
 - make lint
 - make test
 - make readiness-check
@@ -94,6 +95,7 @@ Acceptance criteria:
 - No unrelated formatting churn.
 
 Validation:
+- make security-check
 - make lint
 - make test
 - make readiness-check
@@ -143,8 +145,17 @@ Requirements:
 
 Validation:
 - terraform fmt/validate if available
+- make security-check
 - make test
 ```
+
+## Role Split
+
+Use `docs/agent-roles.md` to split larger work into bounded roles. Keep write
+scopes separate and require a final lead-engineer review before merge.
+
+For overnight work, use `docs/overnight-sandbox.md`. The overnight flow is
+validation-first and must not push, merge, deploy, or run cloud commands.
 
 ## Review Checklist
 

@@ -15,6 +15,10 @@ on:
         required: true
         default: false
         type: boolean
+      confirm_deploy:
+        description: "Type deploy-dev or deploy-prod to confirm cloud deployment."
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -28,9 +32,36 @@ env:
   NAMESPACE: financial-risk-${{ inputs.environment }}
 
 jobs:
+  guardrails:
+    name: Validate deploy request
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - name: Check confirmation and environment
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          expected_confirmation="deploy-${{ inputs.environment }}"
+          if [[ "${{ inputs.confirm_deploy }}" != "${expected_confirmation}" ]]; then
+            echo "confirm_deploy must be '${expected_confirmation}'"
+            exit 1
+          fi
+
+          if [[ "${{ vars.ALLOW_CLOUD_DEPLOY }}" != "true" ]]; then
+            echo "Set ALLOW_CLOUD_DEPLOY=true in the protected GitHub Environment to deploy."
+            exit 1
+          fi
+
+          if [[ "${{ inputs.environment }}" == "prod" && "${{ github.ref_name }}" != "main" ]]; then
+            echo "Production deploys must run from main."
+            exit 1
+          fi
+
   build:
     name: Build image
     runs-on: ubuntu-latest
+    needs: guardrails
     environment: ${{ inputs.environment }}
     permissions:
       contents: read
@@ -80,6 +111,18 @@ jobs:
           aws eks update-kubeconfig \
             --name "${{ vars.EKS_CLUSTER_NAME }}" \
             --region "${{ vars.AWS_REGION }}"
+
+      - name: Validate Kubernetes overlay
+        run: kubectl apply --server-side --dry-run=server -k "deploy/kubernetes/overlays/${{ inputs.environment }}"
+
+      - name: Show Kubernetes diff
+        run: |
+          set +e
+          kubectl diff -k "deploy/kubernetes/overlays/${{ inputs.environment }}"
+          status=$?
+          if [ "$status" -gt 1 ]; then
+            exit "$status"
+          fi
 
       - run: kubectl apply -k "deploy/kubernetes/overlays/${{ inputs.environment }}"
 
