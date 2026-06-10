@@ -36,10 +36,13 @@ AWS_REGION
 AWS_ROLE_TO_ASSUME
 ECR_REPOSITORY_URI
 EKS_CLUSTER_NAME
+ALLOW_CLOUD_DEPLOY
 ```
 
 Use separate AWS roles for `dev` and `prod`. The Terraform deploy-role scaffold
 trusts GitHub OIDC subjects scoped to `repo:<owner>/<repo>:environment:<name>`.
+Set `ALLOW_CLOUD_DEPLOY=true` only in protected environments where deployment
+has been approved.
 
 ## Access Controls
 
@@ -52,7 +55,8 @@ Access controls should be layered:
 5. A dedicated `risk-pipeline` Kubernetes service account per namespace.
 6. No Kubernetes RBAC grants for the runtime service account unless the app
    needs Kubernetes API access.
-7. A deny-ingress NetworkPolicy because this workload does not serve traffic.
+7. A default-deny NetworkPolicy because this workload does not serve traffic and
+   should only receive explicit egress rules when a real deployment needs them.
 8. Pod security settings: non-root user, dropped capabilities, read-only root
    filesystem, explicit CPU and memory requests/limits.
 
@@ -69,17 +73,20 @@ Build locally:
 docker build -t financial-risk-data-platform:local .
 ```
 
-Render or apply an overlay:
+Render or dry-run an overlay:
 
 ```bash
-kubectl apply -k deploy/kubernetes/overlays/dev
-kubectl apply -k deploy/kubernetes/overlays/prod
+kubectl kustomize deploy/kubernetes/overlays/dev
+kubectl apply --server-side --dry-run=server -k deploy/kubernetes/overlays/dev
 ```
 
 Run the deploy workflow:
 
 ```bash
-gh workflow run deploy.yml -f environment=dev -f run_now=true
+gh workflow run deploy.yml \
+  -f environment=dev \
+  -f run_now=true \
+  -f confirm_deploy=deploy-dev
 ```
 
 ## References

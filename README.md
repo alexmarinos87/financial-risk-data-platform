@@ -23,6 +23,7 @@ Example commands:
 ```bash
 make setup
 make test
+make security-check
 ```
 
 The Makefile uses `.venv/bin/python` by default, so commands can be run
@@ -96,6 +97,9 @@ Additional preparation notes:
 11. `sql/postgres_schema.sql` and `sql/ops_queries.sql` for PostgreSQL examples
 12. `docs/agentic-workflows.md` for larger delegated development workflows
 13. `docs/engineering-delivery-workflow.md` for the engineer-owned delivery model
+14. `docs/agent-roles.md` for splitting repo work across bounded roles
+15. `docs/overnight-sandbox.md` for safe unattended validation runs
+16. `docs/security-protocols.md` for local and cloud safety controls
 
 ## Local Database Playground
 
@@ -130,6 +134,26 @@ can be written under `.demo/`. Both paths are ignored by git so repeatable runs
 do not pollute commits. Keep reusable sample inputs under `tests/fixtures/`.
 Use `make clean-generated` to remove local outputs and caches before a fresh
 demo run.
+
+## Security And Readiness Checks
+
+Run the full local readiness path before a demo or pull request:
+
+```bash
+make security-check
+make readiness-check
+```
+
+For a safe unattended validation loop:
+
+```bash
+make sandbox-once
+make overnight-sandbox
+```
+
+The overnight sandbox writes logs under `.sandbox/`, which is ignored by git. It
+does not push, merge, deploy, run `terraform apply`, or use cloud credentials by
+default.
 
 ## Deployment
 

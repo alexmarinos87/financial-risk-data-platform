@@ -69,7 +69,7 @@ Use the smallest validation set that matches the risk.
 | Change Type | Validation |
 | --- | --- |
 | Docs only | `git diff --check` |
-| Python logic | `make lint && make test` |
+| Python logic | `make security-check && make lint && make test` |
 | Demo path | `make readiness-check` |
 | PostgreSQL loader | `make clean-generated && make run-demo && make load-postgres-dry-run` |
 | Local database walkthrough | `make local-db-up && make consistency-demo && make local-db-down` |
@@ -93,6 +93,10 @@ In a managed AWS version, the same model would become CloudWatch metrics,
 pipeline failure alarms, RDS/Aurora query checks, DocumentDB collection counts,
 and S3 partition freshness checks. The current repo prepares that path without
 creating billable resources by default.
+
+For unattended local validation, use `docs/overnight-sandbox.md`. The sandbox
+runs readiness and security checks repeatedly, writes logs under `.sandbox/`,
+and does not push, merge, deploy, or create cloud resources.
 
 ## Review Questions
 

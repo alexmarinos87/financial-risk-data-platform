@@ -25,6 +25,7 @@ Use these commands for normal validation:
 ```bash
 make lint
 make test
+make security-check
 make readiness-check
 ```
 
@@ -68,6 +69,11 @@ and run the closest local validation that does not require those tools.
    mapping, S3/Lambda, data quality, and backfills.
 7. When adding a new feature, update the relevant walkthrough or preparation
    doc if it changes how the project should be explained.
+8. Use `docs/agent-roles.md` when splitting work across multiple delegated
+   tasks.
+9. Use `docs/overnight-sandbox.md` for unattended validation loops.
+10. Use `docs/security-protocols.md` for cloud, deploy, secret, and ownership
+   controls.
 
 ## Git Workflow
 
@@ -83,6 +89,20 @@ Unless the user asks only for analysis:
 Do not mention internal tool names in commit messages or pull request titles
 unless the user explicitly asks for that.
 
+## Overnight Sandbox Rules
+
+Unattended overnight work must be validation-first. It can run local checks and
+write logs under `.sandbox/`, but it must not push, merge, deploy, run
+`terraform apply`, or use cloud credentials unless the user explicitly approves
+that exact action.
+
+Use:
+
+```bash
+make sandbox-once
+make overnight-sandbox
+```
+
 ## Validation Expectations
 
 For Python or pipeline changes:
@@ -90,6 +110,7 @@ For Python or pipeline changes:
 ```bash
 make lint
 make test
+make security-check
 ```
 
 For demo-path changes:
