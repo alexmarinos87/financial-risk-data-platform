@@ -172,10 +172,11 @@ Short version:
 
 What would you change for production?
 
-> I would add a real warehouse load step, alerting from data quality status, and
-> environment-specific secrets and access controls. I would also decide whether
-> the workload belongs on a scheduled container, Lambda, or managed batch job
-> based on data volume and runtime.
+> I would move the local warehouse load pattern into a managed orchestration
+> path, add alerting from data quality status, and use environment-specific
+> secrets and access controls. I would also decide whether the workload belongs
+> on a scheduled container, Lambda, or managed batch job based on data volume and
+> runtime.
 
 Why not deploy the full Kubernetes path for a portfolio project?
 

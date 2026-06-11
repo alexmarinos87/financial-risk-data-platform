@@ -73,7 +73,8 @@ Use the smallest validation set that matches the risk.
 | Demo path | `make readiness-check` |
 | PostgreSQL loader | `make clean-generated && make run-demo && make load-postgres-dry-run` |
 | Local database walkthrough | `make local-db-up && make consistency-demo && make local-db-down` |
-| Terraform scaffold | `terraform -chdir=infra/terraform fmt -check -diff && terraform -chdir=infra/terraform init -backend=false && terraform -chdir=infra/terraform validate` |
+| Terraform or Kubernetes scaffold | `make infrastructure-check` |
+| Whole-repo iteration | `make iteration-check` |
 
 If Docker or Terraform is not installed locally, state that clearly and run the
 nearest available check.
@@ -97,6 +98,9 @@ creating billable resources by default.
 For unattended local validation, use `docs/overnight-sandbox.md`. The sandbox
 runs readiness and security checks repeatedly, writes logs under `.sandbox/`,
 and does not push, merge, deploy, or create cloud resources.
+
+For continued improvement, use `docs/iteration-loop.md` and
+`docs/iteration-backlog.md`. The queue keeps work small enough to review.
 
 ## Review Questions
 

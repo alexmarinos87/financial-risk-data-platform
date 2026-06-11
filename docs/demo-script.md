@@ -14,6 +14,32 @@ make test
 Expected result: the test suite passes from a clean checkout after dependency
 installation.
 
+## Five-Minute Walkthrough Path
+
+Use this when the conversation is time-boxed:
+
+1. State the contract: source events become validated raw parquet, curated risk
+   datasets, and PostgreSQL-style serving tables.
+2. Run `make readiness-check`.
+3. Point to the summary values: 7 source records become 6 raw events, 9 curated
+   records, 1 duplicate, and 1 late event.
+4. Show `src/orchestration/run_pipeline.py` for validation, deduplication,
+   partition locking, and writes.
+5. Show `src/storage/s3_writer.py` for deterministic partitioned output.
+6. Show `sql/consistency_checks.sql` or `docs/data-consistency-walkthrough.md`
+   for the source-to-warehouse reconciliation story.
+7. Close with the trade-off: the repo prioritises repeatable batch reliability
+   and local evidence over a live cloud deployment.
+
+## Command Evidence Map
+
+| Command | Decision it proves |
+| --- | --- |
+| `make security-check` | Generated output, obvious secrets, deploy guardrails, Kubernetes defaults, and Terraform creation flags are checked locally. |
+| `make readiness-check` | Linting, tests, demo pipeline output, and warehouse dry-run loading work together. |
+| `make infrastructure-check` | Kubernetes overlays render and Terraform validates without applying cloud resources. |
+| `make consistency-demo` | With Docker available, source audit counts, raw records, curated rows, and warehouse checks reconcile. |
+
 ## Three-Minute Walkthrough
 
 1. Start with the purpose.
@@ -44,6 +70,11 @@ installation.
    Call out the summary values: raw events written, curated records written,
    duplicate rate, late rate, data quality status, affected partitions, and
    latest risk metrics.
+
+   The demo fixture intentionally includes one duplicate business event and one
+   late event. With the strict demo thresholds, those rates are reported as
+   critical so the walkthrough shows visible data quality evidence instead of a
+   happy-path-only run.
 
 4. Show storage reliability.
 

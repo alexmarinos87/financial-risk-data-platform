@@ -4,10 +4,30 @@ from src.analytics.data_quality import (
     numeric_range_metrics,
     required_field_metrics,
 )
+from src.orchestration.run_pipeline import _evaluate_max, _evaluate_threshold
 
 
 def test_late_rate_handles_empty_total() -> None:
     assert late_rate(3, 0) == 0.0
+
+
+def test_late_rate_keeps_boundary_values_explicit() -> None:
+    assert late_rate(0, 4) == 0.0
+    assert late_rate(1, 4) == 0.25
+    assert late_rate(4, 4) == 1.0
+
+
+def test_data_quality_max_threshold_treats_equal_rate_as_ok() -> None:
+    assert _evaluate_max(0.02, 0.02) == "ok"
+    assert _evaluate_max(0.0201, 0.02) == "critical"
+    assert _evaluate_max(0.25, None) == "ok"
+
+
+def test_volatility_threshold_status_transitions_are_inclusive() -> None:
+    assert _evaluate_threshold(0.029, warn=0.03, critical=0.07) == "ok"
+    assert _evaluate_threshold(0.03, warn=0.03, critical=0.07) == "warn"
+    assert _evaluate_threshold(0.069, warn=0.03, critical=0.07) == "warn"
+    assert _evaluate_threshold(0.07, warn=0.03, critical=0.07) == "critical"
 
 
 def test_required_field_metrics_counts_missing_fields_by_record() -> None:
