@@ -39,6 +39,12 @@ REQUIRED_FALSE_FLAGS = (
     "create_documentdb_cluster",
 )
 
+KUBERNETES_CONFIG_COPIES = (
+    ("config/storage.yaml", "deploy/kubernetes/base/config/storage.yaml"),
+    ("config/risk_thresholds.yaml", "deploy/kubernetes/base/config/risk_thresholds.yaml"),
+    ("config/symbols.yaml", "deploy/kubernetes/base/config/symbols.yaml"),
+)
+
 
 def run_git(args: list[str]) -> list[str]:
     result = subprocess.run(
@@ -107,6 +113,10 @@ def check_deploy_workflow(failures: list[str]) -> None:
         failures.append(".github/workflows/deploy.yml must require ALLOW_CLOUD_DEPLOY")
     if "github.ref_name" not in text or "main" not in text:
         failures.append(".github/workflows/deploy.yml must restrict production deploys to main")
+    if "risk-pipeline-rendered.yaml" not in text:
+        failures.append(".github/workflows/deploy.yml must apply the rendered deployment manifest")
+    if "kubectl set image" in text and "--local" not in text:
+        failures.append(".github/workflows/deploy.yml must not mutate live images after apply")
 
     on_block = text.split("jobs:", maxsplit=1)[0]
     if re.search(r"(?m)^\s+push:\s*$", on_block) or re.search(
@@ -153,6 +163,20 @@ def check_kubernetes_defaults(failures: list[str]) -> None:
             failures.append("base Kubernetes network policy must include default-deny egress")
 
 
+def check_kubernetes_config_copies(failures: list[str]) -> None:
+    for source_path, deploy_path in KUBERNETES_CONFIG_COPIES:
+        source = ROOT / source_path
+        deploy_copy = ROOT / deploy_path
+        if not source.exists():
+            failures.append(f"Missing source config file: {source_path}")
+            continue
+        if not deploy_copy.exists():
+            failures.append(f"Missing Kubernetes config copy: {deploy_path}")
+            continue
+        if source.read_text(encoding="utf-8") != deploy_copy.read_text(encoding="utf-8"):
+            failures.append(f"Kubernetes config copy is out of sync: {deploy_path}")
+
+
 def check_terraform_flags(failures: list[str]) -> None:
     variables = ROOT / "infra" / "terraform" / "variables.tf"
     if not variables.exists():
@@ -182,6 +206,7 @@ def main() -> int:
     check_codeowners(failures)
     check_local_compose_bindings(failures)
     check_kubernetes_defaults(failures)
+    check_kubernetes_config_copies(failures)
     check_terraform_flags(failures)
 
     if failures:
@@ -197,6 +222,7 @@ def main() -> int:
     print("- sensitive paths have CODEOWNERS coverage")
     print("- local database ports are bound to localhost")
     print("- base Kubernetes defaults avoid token mounting and deny egress")
+    print("- Kubernetes deploy config copies match repo config")
     print("- optional managed database creation flags default to false")
     return 0
 

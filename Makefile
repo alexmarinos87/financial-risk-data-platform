@@ -3,7 +3,7 @@ PIP ?= $(PYTHON) -m pip
 
 LOCAL_POSTGRES_DSN ?= postgresql://risk_user:risk_password@localhost:5433/risk_platform
 
-.PHONY: setup lint test format benchmark-io docker-build k8s-render-dev k8s-render-prod clean-generated security-check readiness-check sandbox-once overnight-sandbox local-db-up local-db-down local-db-wait local-db-logs postgres-shell mongo-shell run-demo load-postgres-demo load-postgres-dry-run check-postgres-consistency consistency-demo
+.PHONY: setup lint test format benchmark-io docker-build k8s-render-dev k8s-render-prod k8s-check terraform-check infrastructure-check iteration-check clean-generated security-check readiness-check sandbox-once overnight-sandbox local-db-up local-db-down local-db-wait local-db-logs postgres-shell mongo-shell run-demo load-postgres-demo load-postgres-dry-run check-postgres-consistency consistency-demo
 
 setup:
 	python3 -m venv .venv
@@ -30,6 +30,19 @@ k8s-render-dev:
 
 k8s-render-prod:
 	kubectl kustomize deploy/kubernetes/overlays/prod
+
+k8s-check:
+	kubectl kustomize deploy/kubernetes/overlays/dev >/tmp/financial-risk-k8s-dev.yaml
+	kubectl kustomize deploy/kubernetes/overlays/prod >/tmp/financial-risk-k8s-prod.yaml
+
+terraform-check:
+	terraform -chdir=infra/terraform fmt -check -diff
+	terraform -chdir=infra/terraform init -backend=false
+	terraform -chdir=infra/terraform validate
+
+infrastructure-check: k8s-check terraform-check
+
+iteration-check: security-check infrastructure-check readiness-check
 
 clean-generated:
 	rm -rf data .demo .benchmarks .pytest_cache .mypy_cache .ruff_cache

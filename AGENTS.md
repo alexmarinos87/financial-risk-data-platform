@@ -46,9 +46,7 @@ make local-db-down
 When Terraform is available, validate infrastructure changes:
 
 ```bash
-terraform -chdir=infra/terraform fmt -check -diff
-terraform -chdir=infra/terraform init -backend=false
-terraform -chdir=infra/terraform validate
+make infrastructure-check
 ```
 
 If Docker or Terraform is unavailable, state that clearly in the final summary
@@ -74,6 +72,8 @@ and run the closest local validation that does not require those tools.
 9. Use `docs/overnight-sandbox.md` for unattended validation loops.
 10. Use `docs/security-protocols.md` for cloud, deploy, secret, and ownership
    controls.
+11. Use `docs/iteration-loop.md` and `docs/iteration-backlog.md` for continued
+   repo iterations.
 
 ## Git Workflow
 
@@ -129,9 +129,19 @@ make test
 
 Also run Docker-based checks if Docker is available.
 
-For Terraform changes, run Terraform format and validate if Terraform is
-available. Keep optional managed databases behind explicit `create_*` flags that
-default to `false`.
+For Terraform or Kubernetes changes, run `make infrastructure-check` if
+Terraform and kubectl are available. Keep optional managed databases behind
+explicit `create_*` flags that default to `false`.
+
+For broad repo iterations:
+
+```bash
+make iteration-check
+git diff --check
+```
+
+Complete one backlog item at a time. Do not start a second item until the first
+diff has been reviewed.
 
 ## Documentation Style
 

@@ -59,6 +59,9 @@ metrics:
 make readiness-check
 ```
 
+For a concise interview walkthrough, use the five-minute path in
+`docs/demo-script.md`.
+
 Include landed external risk signals to enrich the risk summary:
 
 ```bash
@@ -100,6 +103,8 @@ Additional preparation notes:
 14. `docs/agent-roles.md` for splitting repo work across bounded roles
 15. `docs/overnight-sandbox.md` for safe unattended validation runs
 16. `docs/security-protocols.md` for local and cloud safety controls
+17. `docs/operational-runbook.md` for local failure investigation
+18. `docs/iteration-loop.md` and `docs/iteration-backlog.md` for continued repo iterations
 
 ## Local Database Playground
 
@@ -154,6 +159,14 @@ make overnight-sandbox
 The overnight sandbox writes logs under `.sandbox/`, which is ignored by git. It
 does not push, merge, deploy, run `terraform apply`, or use cloud credentials by
 default.
+
+For a bounded improvement iteration:
+
+```bash
+make iteration-check
+```
+
+See `docs/iteration-loop.md` and `docs/iteration-backlog.md`.
 
 ## Deployment
 

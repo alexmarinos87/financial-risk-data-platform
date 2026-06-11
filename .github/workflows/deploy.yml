@@ -112,25 +112,69 @@ jobs:
             --name "${{ vars.EKS_CLUSTER_NAME }}" \
             --region "${{ vars.AWS_REGION }}"
 
-      - name: Validate Kubernetes overlay
-        run: kubectl apply --server-side --dry-run=server -k "deploy/kubernetes/overlays/${{ inputs.environment }}"
+      - name: Render Kubernetes manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          render_dir="$(mktemp -d)"
+          cp -R deploy/kubernetes "${render_dir}/kubernetes"
+
+          image_uri="${{ needs.build.outputs.image_uri }}"
+          export IMAGE_NAME="${image_uri%:*}"
+          export IMAGE_TAG="${image_uri##*:}"
+          export OVERLAY="${{ inputs.environment }}"
+          export RENDER_DIR="${render_dir}"
+
+          python3 <<'PY'
+          import os
+          from pathlib import Path
+
+          path = (
+              Path(os.environ["RENDER_DIR"])
+              / "kubernetes"
+              / "overlays"
+              / os.environ["OVERLAY"]
+              / "kustomization.yaml"
+          )
+          lines = path.read_text(encoding="utf-8").splitlines()
+
+          in_target_image = False
+          found = False
+          updated = []
+          for line in lines:
+              stripped = line.strip()
+              if stripped.startswith("- name:"):
+                  in_target_image = stripped == "- name: financial-risk-data-platform"
+              if in_target_image and stripped.startswith("newName:"):
+                  line = f"    newName: {os.environ['IMAGE_NAME']}"
+                  found = True
+              elif in_target_image and stripped.startswith("newTag:"):
+                  line = f"    newTag: {os.environ['IMAGE_TAG']}"
+              updated.append(line)
+
+          if not found:
+              raise SystemExit("financial-risk-data-platform image entry was not found")
+
+          path.write_text("\n".join(updated) + "\n", encoding="utf-8")
+          PY
+
+          kubectl kustomize "${render_dir}/kubernetes/overlays/${{ inputs.environment }}" \
+            > /tmp/risk-pipeline-rendered.yaml
+
+      - name: Validate Kubernetes manifest
+        run: kubectl apply --server-side --dry-run=server -f /tmp/risk-pipeline-rendered.yaml
 
       - name: Show Kubernetes diff
         run: |
           set +e
-          kubectl diff -k "deploy/kubernetes/overlays/${{ inputs.environment }}"
+          kubectl diff -f /tmp/risk-pipeline-rendered.yaml
           status=$?
           if [ "$status" -gt 1 ]; then
             exit "$status"
           fi
 
-      - run: kubectl apply -k "deploy/kubernetes/overlays/${{ inputs.environment }}"
-
-      - run: |
-          kubectl set image \
-            cronjob/risk-pipeline-live \
-            pipeline="${{ needs.build.outputs.image_uri }}" \
-            --namespace "${NAMESPACE}"
+      - run: kubectl apply -f /tmp/risk-pipeline-rendered.yaml
 
       - if: ${{ inputs.run_now }}
         run: |

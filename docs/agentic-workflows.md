@@ -144,7 +144,7 @@ Requirements:
 - Do not run terraform apply.
 
 Validation:
-- terraform fmt/validate if available
+- make infrastructure-check
 - make security-check
 - make test
 ```
@@ -156,6 +156,10 @@ scopes separate and require a final lead-engineer review before merge.
 
 For overnight work, use `docs/overnight-sandbox.md`. The overnight flow is
 validation-first and must not push, merge, deploy, or run cloud commands.
+
+For continued improvement work, use `docs/iteration-loop.md` and pick one item
+from `docs/iteration-backlog.md`. Keep each iteration to one coherent change
+set and stop after validation for review.
 
 ## Review Checklist
 

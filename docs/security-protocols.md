@@ -8,19 +8,27 @@ Cloud deployment remains manual and approval-driven.
 1. `make security-check` scans for obvious committed secrets, generated output,
    unsafe deploy triggers, missing ownership rules, unsafe local database port
    bindings, risky Kubernetes defaults, and managed database creation flags.
-2. CI runs `make security-check` and `make readiness-check`.
+2. CI separates security guardrails, Python readiness, and infrastructure
+   validation into distinct jobs.
 3. `.gitignore` and `.dockerignore` exclude local environments, generated data,
    Terraform state, kubeconfigs, AWS credential folders, key material, and local
-   sandbox logs.
+   sandbox logs. Terraform provider lock files remain tracked for reproducible
+   validation.
 4. Docker Compose publishes PostgreSQL and MongoDB only on `127.0.0.1`.
 5. The deploy workflow is manual-only and requires typed confirmation.
 6. The deploy workflow requires `ALLOW_CLOUD_DEPLOY=true` in the protected
    GitHub Environment.
 7. Production deploys must run from `main`.
-8. Kubernetes deploys perform server-side dry-run and diff before apply.
+8. Kubernetes deploys render the selected overlay with the immutable image tag,
+   then perform server-side dry-run and diff before applying the same manifest.
 9. Base Kubernetes manifests default to no service account token automount and
    default-deny ingress/egress.
 10. `.github/CODEOWNERS` marks sensitive paths for ownership review.
+11. `make infrastructure-check` renders Kubernetes overlays and validates
+    Terraform without applying cloud changes.
+12. The CI infrastructure job installs Kubernetes and Terraform CLIs, then runs
+    `make infrastructure-check`; it does not configure cloud credentials,
+    deploy, or run `terraform apply`.
 
 ## Human Approval Required
 

@@ -76,9 +76,19 @@ docker build -t financial-risk-data-platform:local .
 Render or dry-run an overlay:
 
 ```bash
+make infrastructure-check
 kubectl kustomize deploy/kubernetes/overlays/dev
 kubectl apply --server-side --dry-run=server -k deploy/kubernetes/overlays/dev
 ```
+
+The Kubernetes base carries a deploy-time copy of the runtime config under
+`deploy/kubernetes/base/config/` because Kustomize refuses to load files outside
+the kustomization root by default. Keep those files aligned with `config/` when
+runtime configuration changes.
+
+The GitHub deploy workflow renders the selected overlay, injects the immutable
+image tag into that rendered manifest, then runs server-side dry-run, diff, and
+apply against the same file.
 
 Run the deploy workflow:
 
