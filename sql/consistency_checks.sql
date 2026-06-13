@@ -21,7 +21,10 @@ warehouse_counts AS (
         (SELECT COUNT(*) FROM risk_platform.returns_1m) AS returns_1m,
         (SELECT COUNT(*) FROM risk_platform.volatility_5m) AS volatility_5m,
         (SELECT COUNT(*) FROM risk_platform.risk_summary) AS risk_summary,
-        (SELECT COUNT(*) FROM risk_platform.data_quality_metrics) AS data_quality_runs
+        (SELECT COUNT(*) FROM risk_platform.data_quality_metrics) AS data_quality_runs,
+        (SELECT COUNT(*) FROM risk_platform.latest_risk_summary) AS latest_risk_symbols,
+        (SELECT COUNT(*) FROM risk_platform.current_symbol_dimension) AS current_symbol_dimensions,
+        (SELECT COUNT(*) FROM risk_platform.finance_risk_semantic_model) AS finance_reporting_rows
 )
 SELECT
     'source_records_to_quality_total' AS check_name,
@@ -105,5 +108,26 @@ SELECT
         ELSE 'fail'
     END
 FROM latest_quality
+
+UNION ALL
+
+SELECT
+    'current_symbol_dimension_rows_expected',
+    '2',
+    current_symbol_dimensions::text,
+    CASE WHEN current_symbol_dimensions = 2 THEN 'pass' ELSE 'fail' END
+FROM warehouse_counts
+
+UNION ALL
+
+SELECT
+    'finance_reporting_rows_to_latest_risk_symbols',
+    latest_risk_symbols::text,
+    finance_reporting_rows::text,
+    CASE
+        WHEN finance_reporting_rows = latest_risk_symbols THEN 'pass'
+        ELSE 'fail'
+    END
+FROM warehouse_counts
 
 ORDER BY check_name;

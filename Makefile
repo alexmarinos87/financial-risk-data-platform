@@ -3,7 +3,7 @@ PIP ?= $(PYTHON) -m pip
 
 LOCAL_POSTGRES_DSN ?= postgresql://risk_user:risk_password@localhost:5433/risk_platform
 
-.PHONY: setup lint test format benchmark-io docker-build k8s-render-dev k8s-render-prod k8s-check terraform-check infrastructure-check iteration-check clean-generated security-check readiness-check sandbox-once overnight-sandbox local-db-up local-db-down local-db-wait local-db-logs postgres-shell mongo-shell run-demo load-postgres-demo load-postgres-dry-run check-postgres-consistency consistency-demo
+.PHONY: setup lint type-check test format benchmark-io docker-build k8s-render-dev k8s-render-prod k8s-check terraform-check infrastructure-check quality-check iteration-check clean-generated security-check readiness-check sandbox-once overnight-sandbox local-db-up local-db-down local-db-wait local-db-logs postgres-shell mongo-shell run-demo load-postgres-demo load-postgres-dry-run check-postgres-consistency consistency-demo
 
 setup:
 	python3 -m venv .venv
@@ -12,6 +12,9 @@ setup:
 
 lint:
 	$(PYTHON) -m ruff check .
+
+type-check:
+	$(PYTHON) -m mypy --package src
 
 format:
 	$(PYTHON) -m ruff check . --fix
@@ -42,7 +45,9 @@ terraform-check:
 
 infrastructure-check: k8s-check terraform-check
 
-iteration-check: security-check infrastructure-check readiness-check
+quality-check: lint type-check test
+
+iteration-check: security-check infrastructure-check quality-check clean-generated run-demo load-postgres-dry-run
 
 clean-generated:
 	rm -rf data .demo .benchmarks .pytest_cache .mypy_cache .ruff_cache
@@ -50,7 +55,7 @@ clean-generated:
 security-check:
 	$(PYTHON) scripts/security_check.py
 
-readiness-check: lint test clean-generated run-demo load-postgres-dry-run
+readiness-check: quality-check clean-generated run-demo load-postgres-dry-run
 
 sandbox-once:
 	PYTHONUNBUFFERED=1 $(PYTHON) scripts/overnight_sandbox.py --cycles 1 --sleep-seconds 0
@@ -84,7 +89,8 @@ run-demo:
 		--input tests/fixtures/demo_events.json \
 		--late-seconds 60 \
 		--vol-window 2 \
-		--summary-json .demo/pipeline-summary.json
+		--summary-json .demo/pipeline-summary.json \
+		--lineage-json .demo/lineage.json
 
 load-postgres-demo:
 	$(PYTHON) -m src.warehouse.postgres_loader --dsn "$(LOCAL_POSTGRES_DSN)"

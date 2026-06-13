@@ -9,7 +9,8 @@ Cloud deployment remains manual and approval-driven.
    unsafe deploy triggers, missing ownership rules, unsafe local database port
    bindings, risky Kubernetes defaults, and managed database creation flags.
 2. CI separates security guardrails, Python readiness, and infrastructure
-   validation into distinct jobs.
+   validation into distinct jobs. Python readiness includes linting, type
+   checking, tests, demo execution, and warehouse dry-run loading.
 3. `.gitignore` and `.dockerignore` exclude local environments, generated data,
    Terraform state, kubeconfigs, AWS credential folders, key material, and local
    sandbox logs. Terraform provider lock files remain tracked for reproducible

@@ -5,6 +5,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import pandas as pd
 
@@ -31,6 +32,7 @@ from ..processing.windowing import floor_time
 from ..storage.partitioning import partition_path
 from ..storage.s3_writer import write_records
 from ..storage.storage_config import load_storage_config
+from .lineage import build_lineage_manifest, write_lineage_manifest
 from .locks import acquire_partition_locks, release_partition_locks
 
 REQUIRED_FIELDS = ["event_id", "symbol", "price", "volume", "ts_event", "ts_ingest", "source"]
@@ -80,6 +82,11 @@ def _parse_args() -> argparse.Namespace:
         "--summary-json",
         type=Path,
         help="Optional path to write the pipeline run summary as JSON.",
+    )
+    parser.add_argument(
+        "--lineage-json",
+        type=Path,
+        help="Optional path to write the source-to-report lineage manifest as JSON.",
     )
     parser.add_argument(
         "--storage-config",
@@ -256,7 +263,9 @@ def run_pipeline(
     signals_path: Path | None = None,
     lock_owner: str | None = None,
     lock_stale_seconds: int | None = None,
+    lineage_json_path: Path | None = None,
 ) -> dict[str, Any]:
+    run_id = str(uuid4())
     raw_payloads = _load_input(input_path)
     external_signal_records = _load_external_signal_records(signals_path)
     storage_config = load_storage_config(storage_config_path)
@@ -488,13 +497,7 @@ def run_pipeline(
     finally:
         release_partition_locks(lock_paths)
 
-    return {
-        "raw_events": raw_written,
-        "curated_records": curated_written,
-        "curated_records_by_dataset": curated_writes,
-        "partitions": partitions,
-        "late_rate": late_rate_value,
-        "duplicate_rate": duplicate_rate,
+    quality_summary = {
         "required_fields_status": required_field_quality["status"],
         "missing_required_field_count": required_field_quality["missing_field_count"],
         "missing_required_record_count": required_field_quality["failed_record_count"],
@@ -505,15 +508,43 @@ def run_pipeline(
         "value_validity_status": value_quality["status"],
         "invalid_value_count": value_quality["invalid_field_count"],
         "invalid_value_record_count": value_quality["failed_record_count"],
+        "late_status": late_status,
+        "duplicate_status": duplicate_status,
+    }
+    if lineage_json_path is not None:
+        lineage_manifest = build_lineage_manifest(
+            run_id=run_id,
+            input_path=input_path,
+            signals_path=signals_path,
+            storage_config=storage_config,
+            raw_dataset=raw_dataset,
+            raw_payload_count=len(raw_payloads),
+            deduped_event_count=len(deduped),
+            external_signal_count=len(external_signal_records),
+            raw_written=raw_written,
+            curated_writes=curated_writes,
+            partitions=partitions,
+            quality_summary=quality_summary,
+        )
+        write_lineage_manifest(lineage_json_path, lineage_manifest)
+
+    return {
+        "pipeline_run_id": run_id,
+        "raw_events": raw_written,
+        "curated_records": curated_written,
+        "curated_records_by_dataset": curated_writes,
+        "partitions": partitions,
+        "late_rate": late_rate_value,
+        "duplicate_rate": duplicate_rate,
+        **quality_summary,
         "volatility_latest": volatility_latest,
         "value_at_risk": var_latest,
         "volatility_status": volatility_status,
-        "late_status": late_status,
-        "duplicate_status": duplicate_status,
         "external_signal_count": len(external_signal_records),
         "external_signals_latest": {
             record["name"]: record["latest_value"] for record in external_signal_summary_records
         },
+        "lineage_manifest_path": str(lineage_json_path) if lineage_json_path is not None else None,
     }
 
 
@@ -528,6 +559,7 @@ def main() -> None:
         vol_window=args.vol_window,
         storage_config_path=args.storage_config,
         lock_stale_seconds=args.lock_stale_seconds,
+        lineage_json_path=args.lineage_json,
     )
     if args.summary_json is not None:
         args.summary_json.parent.mkdir(parents=True, exist_ok=True)

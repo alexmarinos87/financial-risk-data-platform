@@ -59,6 +59,10 @@ metrics:
 make readiness-check
 ```
 
+The demo writes `.demo/pipeline-summary.json` and `.demo/lineage.json`.
+The lineage manifest traces source inventory, transformations, raw and curated
+outputs, data quality checks, and the reporting view dependency.
+
 For a concise interview walkthrough, use the five-minute path in
 `docs/demo-script.md`.
 
@@ -97,7 +101,7 @@ Additional preparation notes:
 8. `docs/data-consistency-walkthrough.md` for source-to-warehouse reconciliation
 9. `docs/aws-managed-databases.md` for disabled-by-default RDS/Aurora/DocumentDB IaC
 10. `docs/lambda-s3-orchestration.md` for AWS orchestration mapping
-11. `sql/postgres_schema.sql` and `sql/ops_queries.sql` for PostgreSQL examples
+11. `sql/postgres_schema.sql` and `sql/ops_queries.sql` for PostgreSQL warehouse and reporting examples
 12. `docs/agentic-workflows.md` for larger delegated development workflows
 13. `docs/engineering-delivery-workflow.md` for the engineer-owned delivery model
 14. `docs/agent-roles.md` for splitting repo work across bounded roles
@@ -121,6 +125,15 @@ make local-db-down
 
 See `docs/postgres-mongodb-walkthrough.md` for inspection commands and
 `docs/data-consistency-walkthrough.md` for the full reconciliation flow.
+
+The PostgreSQL seed also includes a small finance reporting layer:
+
+```text
+symbol_dimension_history -> current_symbol_dimension -> finance_risk_semantic_model
+```
+
+That demonstrates SCD Type 2 history, current dimension serving, and a
+dashboard-ready view over the latest risk and data quality outputs.
 
 ## Performance Benchmark
 
@@ -146,6 +159,7 @@ Run the full local readiness path before a demo or pull request:
 
 ```bash
 make security-check
+make quality-check
 make readiness-check
 ```
 

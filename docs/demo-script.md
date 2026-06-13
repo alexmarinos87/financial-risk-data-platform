@@ -26,9 +26,11 @@ Use this when the conversation is time-boxed:
 4. Show `src/orchestration/run_pipeline.py` for validation, deduplication,
    partition locking, and writes.
 5. Show `src/storage/s3_writer.py` for deterministic partitioned output.
-6. Show `sql/consistency_checks.sql` or `docs/data-consistency-walkthrough.md`
+6. Show `.demo/lineage.json` for source inventory, transformations, outputs,
+   quality checks, and the reporting view dependency.
+7. Show `sql/consistency_checks.sql` or `docs/data-consistency-walkthrough.md`
    for the source-to-warehouse reconciliation story.
-7. Close with the trade-off: the repo prioritises repeatable batch reliability
+8. Close with the trade-off: the repo prioritises repeatable batch reliability
    and local evidence over a live cloud deployment.
 
 ## Command Evidence Map
@@ -36,7 +38,7 @@ Use this when the conversation is time-boxed:
 | Command | Decision it proves |
 | --- | --- |
 | `make security-check` | Generated output, obvious secrets, deploy guardrails, Kubernetes defaults, and Terraform creation flags are checked locally. |
-| `make readiness-check` | Linting, tests, demo pipeline output, and warehouse dry-run loading work together. |
+| `make readiness-check` | Linting, type checking, tests, demo summary, lineage output, and warehouse dry-run loading work together. |
 | `make infrastructure-check` | Kubernetes overlays render and Terraform validates without applying cloud resources. |
 | `make consistency-demo` | With Docker available, source audit counts, raw records, curated rows, and warehouse checks reconcile. |
 
@@ -64,7 +66,8 @@ Use this when the conversation is time-boxed:
      --input tests/fixtures/demo_events.json \
      --late-seconds 60 \
      --vol-window 2 \
-     --summary-json .demo/pipeline-summary.json
+     --summary-json .demo/pipeline-summary.json \
+     --lineage-json .demo/lineage.json
    ```
 
    Call out the summary values: raw events written, curated records written,
@@ -75,6 +78,10 @@ Use this when the conversation is time-boxed:
    late event. With the strict demo thresholds, those rates are reported as
    critical so the walkthrough shows visible data quality evidence instead of a
    happy-path-only run.
+
+   Open `.demo/lineage.json` to show the source inventory, authoritative keys,
+   raw and curated outputs, transformation steps, quality checks, and the
+   reporting view dependency.
 
 4. Show storage reliability.
 

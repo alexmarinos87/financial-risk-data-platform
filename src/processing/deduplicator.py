@@ -1,6 +1,9 @@
-def dedupe_events(events: list[dict], key: str = "event_id") -> list[dict]:
-    seen: set[str] = set()
-    output: list[dict] = []
+from typing import Any
+
+
+def dedupe_events(events: list[dict[str, Any]], key: str = "event_id") -> list[dict[str, Any]]:
+    seen: set[Any] = set()
+    output: list[dict[str, Any]] = []
     for event in events:
         event_id = event.get(key)
         if event_id in seen:

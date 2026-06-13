@@ -13,6 +13,7 @@ MongoDB-style source documents
   -> raw parquet output
   -> curated parquet output
   -> PostgreSQL warehouse tables
+  -> lineage manifest
   -> reconciliation checks
 ```
 
@@ -29,6 +30,8 @@ The expected demo counts are:
 | `volatility_5m` rows | 2 |
 | `risk_summary` rows | 2 |
 | Data quality rows | 1 |
+| Current symbol dimension rows | 2 |
+| Finance reporting rows | 2 |
 
 ## Start Local Databases
 
@@ -59,6 +62,10 @@ Curated records written: 9
 Late rate: 16.67% (status: critical)
 Duplicate rate: 14.29% (status: critical)
 ```
+
+The demo also writes `.demo/lineage.json`. This manifest records source
+inventory, authoritative keys, raw and curated output locations,
+transformation steps, quality statuses, and the reporting view dependency.
 
 ## Dry-Run The PostgreSQL Loader
 
@@ -97,6 +104,17 @@ risk_platform.risk_summary
 risk_platform.external_signal_summary
 ```
 
+The local PostgreSQL seed also creates a finance reporting shape:
+
+```text
+risk_platform.symbol_dimension_history
+risk_platform.current_symbol_dimension
+risk_platform.finance_risk_semantic_model
+```
+
+This gives a small SCD Type 2 dimension history and a dashboard-friendly
+reporting view over the latest risk and data quality outputs.
+
 The local connection string is:
 
 ```text
@@ -124,6 +142,8 @@ The checks compare:
 5. Raw events to data quality deduped count.
 6. Curated table row counts to expected demo counts.
 7. Latest late and duplicate statuses to expected critical statuses.
+8. Current symbol dimension rows to expected demo symbol count.
+9. Finance reporting rows to latest risk summary symbols.
 
 Every row should return `status = pass`.
 
@@ -142,6 +162,13 @@ clean-generated
 run-demo
 load-postgres-demo
 check-postgres-consistency
+```
+
+`run-demo` writes:
+
+```text
+.demo/pipeline-summary.json
+.demo/lineage.json
 ```
 
 ## Inspect MongoDB Source Shape
@@ -202,7 +229,56 @@ SELECT 'volatility_5m', COUNT(*) FROM risk_platform.volatility_5m
 UNION ALL
 SELECT 'risk_summary', COUNT(*) FROM risk_platform.risk_summary
 UNION ALL
-SELECT 'data_quality_metrics', COUNT(*) FROM risk_platform.data_quality_metrics;
+SELECT 'data_quality_metrics', COUNT(*) FROM risk_platform.data_quality_metrics
+UNION ALL
+SELECT 'current_symbol_dimension', COUNT(*) FROM risk_platform.current_symbol_dimension
+UNION ALL
+SELECT 'finance_risk_semantic_model', COUNT(*) FROM risk_platform.finance_risk_semantic_model;
+```
+
+Current reporting dimension:
+
+```sql
+SELECT
+    symbol,
+    source,
+    asset_class,
+    reporting_currency,
+    sector,
+    effective_from
+FROM risk_platform.current_symbol_dimension
+ORDER BY symbol, source;
+```
+
+Finance reporting view:
+
+```sql
+SELECT
+    symbol,
+    asset_class,
+    reporting_currency,
+    sector,
+    metric_ts,
+    volatility_status,
+    late_status,
+    duplicate_status
+FROM risk_platform.finance_risk_semantic_model
+ORDER BY symbol;
+```
+
+Lineage manifest:
+
+```bash
+.venv/bin/python -m json.tool .demo/lineage.json
+```
+
+Key sections to inspect:
+
+```text
+source_inventory
+layers
+transformations
+quality_checks
 ```
 
 ## Interview Explanation
@@ -213,7 +289,11 @@ Use this version:
 > including one duplicate business event and one late event. The pipeline
 > deduplicates to 6 raw events, produces 9 curated records, loads those into
 > PostgreSQL with idempotent upserts, and the consistency SQL checks that source
-> counts, raw counts, curated counts, and data quality metrics agree.
+> counts, raw counts, curated counts, data quality metrics, and reporting rows
+> agree. I also added a small SCD Type 2 symbol dimension and a finance reporting
+> view so the warehouse shape is closer to what reporting users consume. The
+> lineage manifest gives a source-to-report explanation for how the demo output
+> was produced.
 
 The key point:
 

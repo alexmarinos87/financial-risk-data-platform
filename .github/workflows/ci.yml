@@ -33,6 +33,7 @@ jobs:
           python-version: "3.11"
 
       - run: python -m pip install -e '.[dev]'
+      - run: PYTHON=python make quality-check
       - run: PYTHON=python make readiness-check
 
   infrastructure-validation:

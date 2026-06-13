@@ -2,41 +2,16 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 from uuid import UUID
-
-import yaml
 
 from src.orchestration.backfill import run_backfill
 from src.orchestration.locks import acquire_partition_locks, release_partition_locks
 from src.storage.s3_writer import write_records
+from tests.storage_config_helpers import build_storage_config, write_storage_config
 
 
-def _build_storage_config(tmp_path: Path) -> dict:
-    return {
-        "storage": {
-            "base_dir": str(tmp_path),
-            "raw": {
-                "base_path": str(tmp_path / "raw"),
-                "dataset": "market_events",
-            },
-            "curated": {
-                "base_path": str(tmp_path / "curated"),
-                "datasets": {
-                    "returns_1m": "returns_1m",
-                    "volatility_5m": "volatility_5m",
-                    "data_quality_metrics": "data_quality_metrics",
-                    "risk_summary": "risk_summary",
-                },
-            },
-            "format": "parquet",
-            "partitioning": {
-                "granularity": "hourly",
-            },
-        }
-    }
-
-
-def _seed_raw_partitions(storage_config: dict) -> None:
+def _seed_raw_partitions(storage_config: dict[str, Any]) -> None:
     records = [
         {
             "event_id": "evt-1",
@@ -97,10 +72,8 @@ def _seed_raw_partitions(storage_config: dict) -> None:
 
 
 def test_run_backfill_replays_hourly_partitions_resumes_and_can_force_rerun(tmp_path: Path) -> None:
-    storage_config = _build_storage_config(tmp_path)
-    storage_config_path = tmp_path / "storage.yaml"
-    with storage_config_path.open("w", encoding="utf-8") as handle:
-        yaml.safe_dump(storage_config, handle, sort_keys=False)
+    storage_config = build_storage_config(tmp_path, include_external_signal_summary=False)
+    storage_config_path = write_storage_config(tmp_path, include_external_signal_summary=False)
 
     _seed_raw_partitions(storage_config)
 
@@ -138,7 +111,6 @@ def test_run_backfill_replays_hourly_partitions_resumes_and_can_force_rerun(tmp_
     )
     assert second == []
 
-
     third = run_backfill(
         "2025-01-20T10:00:00Z",
         "2025-01-20T11:00:00Z",
@@ -158,10 +130,8 @@ def test_run_backfill_replays_hourly_partitions_resumes_and_can_force_rerun(tmp_
 
 
 def test_run_backfill_resumes_after_blocked_overlap(tmp_path: Path) -> None:
-    storage_config = _build_storage_config(tmp_path)
-    storage_config_path = tmp_path / "storage.yaml"
-    with storage_config_path.open("w", encoding="utf-8") as handle:
-        yaml.safe_dump(storage_config, handle, sort_keys=False)
+    storage_config = build_storage_config(tmp_path, include_external_signal_summary=False)
+    storage_config_path = write_storage_config(tmp_path, include_external_signal_summary=False)
 
     _seed_raw_partitions(storage_config)
     locked_partition = "year=2025/month=01/day=20/hour=10"
