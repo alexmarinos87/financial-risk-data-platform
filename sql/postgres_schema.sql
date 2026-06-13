@@ -130,6 +130,44 @@ CREATE TABLE IF NOT EXISTS risk_platform.external_signal_summary (
 CREATE INDEX IF NOT EXISTS idx_external_signal_summary_latest
     ON risk_platform.external_signal_summary (latest_ts_event DESC, name, source);
 
+CREATE TABLE IF NOT EXISTS risk_platform.symbol_dimension_history (
+    symbol_dimension_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    symbol TEXT NOT NULL,
+    source TEXT NOT NULL,
+    asset_class TEXT NOT NULL,
+    reporting_currency CHAR(3) NOT NULL,
+    sector TEXT,
+    effective_from TIMESTAMPTZ NOT NULL,
+    effective_to TIMESTAMPTZ,
+    is_current BOOLEAN NOT NULL,
+    change_reason TEXT NOT NULL,
+    record_hash TEXT NOT NULL,
+    loaded_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CHECK (symbol = UPPER(symbol)),
+    CHECK (reporting_currency = UPPER(reporting_currency)),
+    CHECK (record_hash <> ''),
+    CHECK (effective_to IS NULL OR effective_to > effective_from),
+    CHECK (
+        (is_current = true AND effective_to IS NULL)
+        OR (is_current = false AND effective_to IS NOT NULL)
+    )
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_symbol_dimension_history_version
+    ON risk_platform.symbol_dimension_history (symbol, source, effective_from);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_symbol_dimension_history_current
+    ON risk_platform.symbol_dimension_history (symbol, source)
+    WHERE is_current;
+
+CREATE INDEX IF NOT EXISTS idx_symbol_dimension_history_reporting
+    ON risk_platform.symbol_dimension_history (
+        asset_class,
+        reporting_currency,
+        sector,
+        effective_from DESC
+    );
+
 CREATE OR REPLACE VIEW risk_platform.latest_risk_summary AS
 SELECT DISTINCT ON (symbol)
     symbol,
@@ -166,3 +204,51 @@ SELECT
 FROM risk_platform.data_quality_metrics
 ORDER BY ts_ingest DESC
 LIMIT 1;
+
+CREATE OR REPLACE VIEW risk_platform.current_symbol_dimension AS
+SELECT
+    symbol_dimension_id,
+    symbol,
+    source,
+    asset_class,
+    reporting_currency,
+    sector,
+    effective_from,
+    change_reason,
+    record_hash
+FROM risk_platform.symbol_dimension_history
+WHERE is_current;
+
+CREATE OR REPLACE VIEW risk_platform.finance_risk_semantic_model AS
+WITH current_symbol AS (
+    SELECT DISTINCT ON (symbol)
+        symbol,
+        source,
+        asset_class,
+        reporting_currency,
+        sector,
+        effective_from
+    FROM risk_platform.current_symbol_dimension
+    ORDER BY symbol, source
+)
+SELECT
+    risk.symbol,
+    dim.asset_class,
+    dim.reporting_currency,
+    dim.sector,
+    dim.effective_from AS dimension_effective_from,
+    risk.ts_ingest AS metric_ts,
+    risk.volatility_5m,
+    risk.value_at_risk_95,
+    risk.volatility_status,
+    risk.late_rate,
+    risk.duplicate_rate,
+    risk.late_status,
+    risk.duplicate_status,
+    risk.external_signal_count,
+    quality.required_fields_status,
+    quality.null_rate_status,
+    quality.value_validity_status
+FROM risk_platform.latest_risk_summary risk
+LEFT JOIN current_symbol dim ON risk.symbol = dim.symbol
+LEFT JOIN risk_platform.latest_data_quality_status quality ON true;

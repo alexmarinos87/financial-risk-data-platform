@@ -22,6 +22,7 @@ The design emphasizes:
 | Keep raw data replayable | `src/storage/s3_writer.py`, `tests/integration/test_s3_writer.py` |
 | Make backfills deterministic | `src/orchestration/backfill.py`, `src/orchestration/locks.py`, `tests/integration/test_backfill.py` |
 | Serve stable warehouse outputs | `src/warehouse/postgres_loader.py`, `sql/postgres_schema.sql`, `sql/ops_queries.sql` |
+| Trace source-to-report lineage | `src/orchestration/lineage.py`, `.demo/lineage.json`, `tests/unit/test_lineage.py` |
 | Reconcile source to warehouse | `sql/consistency_checks.sql`, `docs/data-consistency-walkthrough.md` |
 | Validate infrastructure without deploying | `Makefile`, `deploy/kubernetes/`, `infra/terraform/` |
 

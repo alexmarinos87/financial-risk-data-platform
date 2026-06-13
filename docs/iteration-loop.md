@@ -44,6 +44,14 @@ make consistency-demo
 make local-db-down
 ```
 
+For Python-only changes:
+
+```bash
+make security-check
+make quality-check
+make readiness-check
+```
+
 ## Stop Conditions
 
 Stop and ask for review before continuing when:

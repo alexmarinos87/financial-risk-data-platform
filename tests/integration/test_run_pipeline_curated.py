@@ -65,6 +65,7 @@ def test_run_pipeline_cli_creates_summary_parent_directory(
         yaml.safe_dump(storage_config, handle, sort_keys=False)
 
     summary_path = tmp_path / ".demo" / "pipeline-summary.json"
+    lineage_path = tmp_path / ".demo" / "lineage.json"
     monkeypatch.setattr(
         sys,
         "argv",
@@ -80,6 +81,8 @@ def test_run_pipeline_cli_creates_summary_parent_directory(
             "2",
             "--summary-json",
             str(summary_path),
+            "--lineage-json",
+            str(lineage_path),
         ],
     )
 
@@ -94,6 +97,16 @@ def test_run_pipeline_cli_creates_summary_parent_directory(
     assert summary["required_fields_status"] == "ok"
     assert summary["late_rate"] > 0.0
     assert summary["duplicate_rate"] > 0.0
+    assert summary["lineage_manifest_path"] == str(lineage_path)
+
+    with lineage_path.open("r", encoding="utf-8") as handle:
+        lineage = json.load(handle)
+    assert lineage["run_id"] == summary["pipeline_run_id"]
+    assert lineage["source_inventory"][0]["records_received"] == 7
+    assert lineage["source_inventory"][0]["records_after_deduplication"] == 6
+    assert lineage["layers"][2]["datasets"][0]["dataset"] == (
+        "risk_platform.finance_risk_semantic_model"
+    )
 
 
 def test_run_pipeline_materializes_all_curated_datasets(tmp_path: Path) -> None:

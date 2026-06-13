@@ -169,3 +169,45 @@ SET
     latest_external_signal_source = EXCLUDED.latest_external_signal_source,
     latest_external_signal_ts_event = EXCLUDED.latest_external_signal_ts_event,
     loaded_at = now();
+
+-- 8. Current reporting dimension for semantic model joins.
+SELECT
+    symbol,
+    source,
+    asset_class,
+    reporting_currency,
+    sector,
+    effective_from,
+    change_reason
+FROM risk_platform.current_symbol_dimension
+ORDER BY symbol, source;
+
+-- 9. Finance reporting view shaped for dashboard or semantic model consumption.
+SELECT
+    symbol,
+    asset_class,
+    reporting_currency,
+    sector,
+    metric_ts,
+    volatility_5m,
+    value_at_risk_95,
+    volatility_status,
+    late_status,
+    duplicate_status,
+    required_fields_status,
+    null_rate_status,
+    value_validity_status
+FROM risk_platform.finance_risk_semantic_model
+ORDER BY symbol;
+
+-- 10. Historical dimension audit trail for SCD Type 2 review.
+SELECT
+    symbol,
+    source,
+    sector,
+    effective_from,
+    effective_to,
+    is_current,
+    change_reason
+FROM risk_platform.symbol_dimension_history
+ORDER BY symbol, effective_from;

@@ -24,6 +24,7 @@ Use these commands for normal validation:
 
 ```bash
 make lint
+make type-check
 make test
 make security-check
 make readiness-check
@@ -32,7 +33,7 @@ make readiness-check
 Expected test suite result:
 
 ```text
-42 passed
+54 passed
 ```
 
 When Docker is available, validate the local source-to-warehouse loop:
@@ -108,8 +109,7 @@ make overnight-sandbox
 For Python or pipeline changes:
 
 ```bash
-make lint
-make test
+make quality-check
 make security-check
 ```
 

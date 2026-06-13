@@ -18,7 +18,8 @@ PostgreSQL is the warehouse-serving shape:
 1. Data is flattened into tables with clear columns.
 2. Primary keys and `ON CONFLICT` make loads idempotent.
 3. Indexes and views make common ops questions fast and repeatable.
-4. SQL consumers should not need to understand raw nested source payloads.
+4. SCD Type 2 dimensions preserve reporting history when reference data changes.
+5. SQL consumers should not need to understand raw nested source payloads.
 
 The pipeline sits between them:
 
@@ -29,7 +30,7 @@ MongoDB-style source documents
   -> validation and flattening
   -> deduplication
   -> curated PostgreSQL tables
-  -> ops queries and dashboards
+  -> reporting dimensions, ops queries, and dashboards
 ```
 
 ## Optional Local Playground
@@ -187,6 +188,51 @@ Inspect latest curated summaries:
 SELECT *
 FROM risk_platform.latest_risk_summary
 ORDER BY symbol;
+```
+
+Inspect the current reporting dimension:
+
+```sql
+SELECT
+    symbol,
+    source,
+    asset_class,
+    reporting_currency,
+    sector,
+    effective_from
+FROM risk_platform.current_symbol_dimension
+ORDER BY symbol, source;
+```
+
+Inspect the finance reporting view:
+
+```sql
+SELECT
+    symbol,
+    asset_class,
+    reporting_currency,
+    sector,
+    metric_ts,
+    volatility_status,
+    late_status,
+    duplicate_status
+FROM risk_platform.finance_risk_semantic_model
+ORDER BY symbol;
+```
+
+Review the SCD Type 2 history:
+
+```sql
+SELECT
+    symbol,
+    source,
+    sector,
+    effective_from,
+    effective_to,
+    is_current,
+    change_reason
+FROM risk_platform.symbol_dimension_history
+ORDER BY symbol, effective_from;
 ```
 
 Check warehouse freshness:

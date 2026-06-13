@@ -45,6 +45,7 @@ TRUNCATE TABLE
     staging.market_events_raw_batch,
     staging.risk_summary_batch,
     staging.source_event_audit,
+    risk_platform.symbol_dimension_history,
     risk_platform.external_signal_summary,
     risk_platform.risk_summary,
     risk_platform.data_quality_metrics,
@@ -52,6 +53,57 @@ TRUNCATE TABLE
     risk_platform.returns_1m,
     risk_platform.market_events_raw
 RESTART IDENTITY;
+
+INSERT INTO risk_platform.symbol_dimension_history (
+    symbol,
+    source,
+    asset_class,
+    reporting_currency,
+    sector,
+    effective_from,
+    effective_to,
+    is_current,
+    change_reason,
+    record_hash
+)
+VALUES
+    (
+        'AAPL',
+        'stooq',
+        'equity',
+        'USD',
+        'technology',
+        '2024-01-01T00:00:00Z',
+        '2025-01-20T10:00:00Z',
+        false,
+        'sector_alignment',
+        'aapl-stooq-2024-technology'
+    ),
+    (
+        'AAPL',
+        'stooq',
+        'equity',
+        'USD',
+        'information_technology',
+        '2025-01-20T10:00:00Z',
+        NULL,
+        true,
+        'sector_alignment',
+        'aapl-stooq-2025-information-technology'
+    ),
+    (
+        'MSFT',
+        'stooq',
+        'equity',
+        'USD',
+        'information_technology',
+        '2025-01-01T00:00:00Z',
+        NULL,
+        true,
+        'initial_load',
+        'msft-stooq-2025-information-technology'
+    )
+ON CONFLICT (symbol, source, effective_from) DO NOTHING;
 
 INSERT INTO risk_platform.market_events_raw (
     event_id,

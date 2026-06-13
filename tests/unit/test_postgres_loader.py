@@ -3,8 +3,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import yaml
-
 from src.orchestration.run_pipeline import run_pipeline
 from src.warehouse.postgres_loader import (
     LOAD_SPECS,
@@ -13,36 +11,7 @@ from src.warehouse.postgres_loader import (
     collect_load_batches,
     load_batches_to_postgres,
 )
-
-
-def _write_storage_config(tmp_path: Path) -> Path:
-    storage_config = {
-        "storage": {
-            "base_dir": str(tmp_path),
-            "raw": {
-                "base_path": str(tmp_path / "raw"),
-                "dataset": "market_events",
-            },
-            "curated": {
-                "base_path": str(tmp_path / "curated"),
-                "datasets": {
-                    "returns_1m": "returns_1m",
-                    "volatility_5m": "volatility_5m",
-                    "data_quality_metrics": "data_quality_metrics",
-                    "risk_summary": "risk_summary",
-                    "external_signal_summary": "external_signal_summary",
-                },
-            },
-            "format": "parquet",
-            "partitioning": {
-                "granularity": "hourly",
-            },
-        }
-    }
-    storage_config_path = tmp_path / "storage.yaml"
-    with storage_config_path.open("w", encoding="utf-8") as handle:
-        yaml.safe_dump(storage_config, handle, sort_keys=False)
-    return storage_config_path
+from tests.storage_config_helpers import write_storage_config
 
 
 def _write_demo_input(tmp_path: Path) -> Path:
@@ -56,7 +25,7 @@ def _write_demo_input(tmp_path: Path) -> Path:
 
 
 def test_collect_load_batches_matches_demo_pipeline_outputs(tmp_path: Path) -> None:
-    storage_config_path = _write_storage_config(tmp_path)
+    storage_config_path = write_storage_config(tmp_path)
     input_path = _write_demo_input(tmp_path)
 
     run_pipeline(
@@ -83,7 +52,7 @@ def test_collect_load_batches_matches_demo_pipeline_outputs(tmp_path: Path) -> N
 
 
 def test_load_batches_to_postgres_dry_run_returns_counts(tmp_path: Path) -> None:
-    storage_config_path = _write_storage_config(tmp_path)
+    storage_config_path = write_storage_config(tmp_path)
     input_path = _write_demo_input(tmp_path)
     run_pipeline(
         input_path=input_path,
