@@ -1,5 +1,21 @@
 # Data Model
 
+This project is a compact market-risk data platform. Its modelling value is not
+the financial formula complexity; it is the source-to-serving contract:
+
+```text
+market-like source records
+  -> validation and normalisation
+  -> deduplicated raw event storage
+  -> curated analytical outputs
+  -> PostgreSQL serving tables and reporting views
+  -> reconciliation evidence
+```
+
+The most important modelling habit in this repository is to define the grain of
+each dataset before discussing columns or code. The grain is the sentence that
+states exactly what one row means.
+
 ## Raw Event Schema
 
 ```json
@@ -27,6 +43,49 @@
 }
 ```
 
+## Current Warehouse Grains
+
+| Dataset | Grain | Primary or conflict key | Notes |
+| --- | --- | --- | --- |
+| `market_events_raw` | One validated, normalised, deduplicated market event per stable source event ID. | `event_id` | This is warehouse raw, not byte-for-byte source landing. Duplicate source payloads are counted in data quality metrics but not retained as separate raw rows. |
+| `returns_1m` | One computed return per symbol and event timestamp, using the previous observed price for that symbol. | `(symbol, ts_event)` | The implementation assumes ordered events. Despite the name, this is observation-to-observation return in the current code, not guaranteed clock-minute return unless input cadence is one minute. |
+| `volatility_5m` | One rolling volatility value per symbol and event timestamp once enough return observations exist. | `(symbol, ts_event)` | The configured rolling window is a count of return observations; `window_start` records the time bucket used for grouping context. |
+| `data_quality_metrics` | One quality summary for a pipeline run timestamp. | `UNIQUE (ts_ingest)` | The table has a surrogate `metric_id`, but idempotent loading uses `ts_ingest`. A production version would usually carry an explicit `pipeline_run_id`. |
+| `risk_summary` | One risk status row per symbol and metric timestamp. | `(symbol, ts_ingest)` | This is a serving summary. It intentionally denormalises latest volatility, VaR, quality status and external signal context. |
+| `external_signal_summary` | One latest signal observation per signal name/source/latest signal ID included in the run. | `(name, source, latest_signal_id)` | This preserves each distinct latest signal ID. If the product requirement were "one current row per signal", the key should be `(name, source)`. |
+| `symbol_dimension_history` | One version of symbol reference attributes for a symbol/source over an effective time interval. | `(symbol, source, effective_from)` plus one-current-row index | This is the repository's SCD Type 2 example. It preserves attribute history such as sector changes. |
+
+## Source, Raw, Curated, Serving
+
+The same business object appears differently at each layer:
+
+1. Source records can be nested, duplicated, late or inconsistent.
+2. Pipeline records are flattened and validated into a stable contract.
+3. Raw parquet records preserve deduplicated event-level facts for replay.
+4. Curated parquet records hold derived metrics.
+5. PostgreSQL tables expose operational and reporting contracts.
+
+This distinction matters during interviews. A source document shape is not the
+same thing as a warehouse serving shape. The pipeline owns the transformation
+contract between them.
+
+## Keys And Idempotency
+
+The project uses stable keys to make re-runs safe:
+
+| Table | Idempotency behaviour |
+| --- | --- |
+| `market_events_raw` | Re-loading the same `event_id` updates the existing warehouse row. |
+| `returns_1m` | Re-loading the same `(symbol, ts_event)` updates the computed return. |
+| `volatility_5m` | Re-loading the same `(symbol, ts_event)` updates the computed volatility. |
+| `data_quality_metrics` | Re-loading the same `ts_ingest` updates the run summary. |
+| `risk_summary` | Re-loading the same `(symbol, ts_ingest)` updates the serving summary. |
+| `external_signal_summary` | Re-loading the same `(name, source, latest_signal_id)` updates that latest-signal row. |
+
+The parquet writer also uses a deterministic content hash for batch filenames.
+That prevents the same batch content from being written repeatedly to the same
+partition.
+
 ## Curated Outputs
 
 1. returns_1m
@@ -34,6 +93,26 @@
 3. data_quality_metrics
 4. risk_summary
 5. external_signal_summary
+
+## Modelling Trade-Offs To Understand
+
+1. `market_events_raw` is deduplicated before write. This makes downstream
+   processing simpler, but it means the duplicate raw source row is represented
+   as a quality metric rather than a separately stored raw payload.
+2. `data_quality_metrics` uses `ts_ingest` as its natural run key. That is fine
+   for the demo, but an explicit `pipeline_run_id` would be more robust when two
+   runs share the same latest ingest timestamp.
+3. `risk_summary` joins to the current symbol dimension by symbol only in the
+   semantic view. This is simple for the demo, but source-aware reporting would
+   need either `source` on the risk summary or a clear rule for choosing a symbol
+   dimension source.
+4. `symbol_dimension_history` has constraints for valid intervals and one
+   current row per symbol/source. It does not currently enforce non-overlapping
+   historical intervals in the database, so that should be covered by tests or
+   reconciliation SQL if the dimension becomes important.
+5. `external_signal_summary` stores latest signal rows with `latest_signal_id`
+   in the key. That is useful for retaining a small history of latest
+   observations, but it is not a strict current-state table.
 
 ## External Signal Summary
 
@@ -68,3 +147,91 @@ It also records value-validity evidence for market fields that must stay in rang
   "value_validity_status": "ok"
 }
 ```
+
+## Study Loop
+
+Use this repository as an active modelling lab:
+
+1. Define the grain in one sentence.
+2. Predict the key and valid row count.
+3. Write the SQL or Python that enforces it.
+4. Add a test that proves the assumption.
+5. Break the assumption with a duplicate, late event, source correction or
+   dimension change.
+6. Decide whether to fix the model, the transformation, or the documentation.
+
+Good learning questions are concrete:
+
+1. What exactly does one row represent?
+2. Which columns uniquely identify that row?
+3. What happens when the same source event is replayed?
+4. What happens when the source sends a correction?
+5. What timestamp drives partitioning, event-time logic and run-time logic?
+6. Can a join multiply rows accidentally?
+7. Which checks prove source, raw, curated and warehouse counts agree?
+
+## First Implementation Exercise
+
+The first modelling improvement is small and defensible:
+
+```text
+Implement symbol reference-data loading for symbol_dimension_history.
+```
+
+Implemented scope:
+
+1. Extend `config/symbols.yaml` so each symbol has `source`, `asset_class`,
+   `reporting_currency`, `sector` and `effective_from`.
+2. Implement `scripts/seed_reference_data.py` so it can generate or apply
+   deterministic SCD Type 2 rows.
+3. Add tests that prove one current row exists per `(symbol, source)`.
+4. Add an overlap check for historical effective intervals.
+5. Document why dimensions are separate from event facts.
+
+Generate deterministic SQL without touching a database:
+
+```bash
+.venv/bin/python scripts/seed_reference_data.py \
+  --config config/symbols.yaml
+```
+
+Write the generated SQL to a local demo file:
+
+```bash
+.venv/bin/python scripts/seed_reference_data.py \
+  --config config/symbols.yaml \
+  --output-sql .demo/symbol_dimension_seed.sql
+```
+
+Apply it to the local PostgreSQL warehouse:
+
+```bash
+.venv/bin/python scripts/seed_reference_data.py \
+  --config config/symbols.yaml \
+  --apply
+```
+
+The learning objective is to understand why reference attributes do not belong
+directly inside every event fact when those attributes can change over time.
+
+## Later Provider-Ingestion Exercise
+
+After the reference-data exercise, add a separate ingestion-boundary exercise:
+
+```text
+Build a small provider-facing API/webhook/OAuth path.
+```
+
+Keep the first version local and provider-neutral:
+
+1. Add an API endpoint that receives provider-style event payloads.
+2. Store the raw request body, provider event ID and received timestamp.
+3. Verify webhook signatures with a local demo secret.
+4. Model OAuth tokens as configuration or local secrets that are never committed.
+5. Transform accepted payloads into the existing market-event contract.
+6. Add replay and duplicate tests using provider event IDs as idempotency keys.
+
+Only choose a real data provider after checking its current authentication,
+rate-limit, webhook and redistribution rules. The portfolio point is not the
+specific vendor; it is proving that external ingestion, auth, idempotency and
+data contracts are handled deliberately.

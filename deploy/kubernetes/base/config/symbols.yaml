@@ -1,7 +1,38 @@
 symbols:
   equities:
-    - AAPL
-    - MSFT
+    - symbol: AAPL
+      source: stooq
+      asset_class: equity
+      reporting_currency: USD
+      sector: technology
+      effective_from: "2024-01-01T00:00:00Z"
+      change_reason: initial_load
+    - symbol: AAPL
+      source: stooq
+      asset_class: equity
+      reporting_currency: USD
+      sector: information_technology
+      effective_from: "2025-01-20T10:00:00Z"
+      change_reason: sector_alignment
+    - symbol: MSFT
+      source: stooq
+      asset_class: equity
+      reporting_currency: USD
+      sector: information_technology
+      effective_from: "2025-01-01T00:00:00Z"
+      change_reason: initial_load
   fx:
-    - EURUSD
-    - USDJPY
+    - symbol: EURUSD
+      source: stooq
+      asset_class: fx
+      reporting_currency: USD
+      sector:
+      effective_from: "2025-01-01T00:00:00Z"
+      change_reason: initial_load
+    - symbol: USDJPY
+      source: stooq
+      asset_class: fx
+      reporting_currency: JPY
+      sector:
+      effective_from: "2025-01-01T00:00:00Z"
+      change_reason: initial_load
