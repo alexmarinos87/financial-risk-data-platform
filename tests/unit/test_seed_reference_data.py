@@ -11,6 +11,7 @@ from scripts.seed_reference_data import (
     build_record_hash,
     build_symbol_dimension_rows,
     build_symbol_dimension_upsert_sql,
+    find_symbol_dimension_row_as_of,
     format_symbol_dimension_sql,
     load_symbol_versions,
     parse_symbol_versions,
@@ -103,6 +104,46 @@ def test_build_symbol_dimension_rows_marks_one_current_row_per_symbol_source() -
         ("EURUSD", "stooq"): 1,
         ("MSFT", "stooq"): 1,
     }
+
+
+@pytest.mark.parametrize(
+    ("as_of", "expected_sector"),
+    [
+        (datetime(2025, 1, 20, 9, 59, 59, tzinfo=timezone.utc), "technology"),
+        (
+            datetime(2025, 1, 20, 10, 0, tzinfo=timezone.utc),
+            "information_technology",
+        ),
+    ],
+)
+def test_find_symbol_dimension_row_as_of_uses_half_open_intervals(
+    as_of: datetime,
+    expected_sector: str,
+) -> None:
+    rows = build_symbol_dimension_rows(parse_symbol_versions(_sample_config()))
+
+    row = find_symbol_dimension_row_as_of(
+        rows,
+        symbol=" aapl ",
+        source="STOOQ",
+        as_of=as_of,
+    )
+
+    assert row is not None
+    assert row.sector == expected_sector
+
+
+def test_find_symbol_dimension_row_as_of_returns_none_outside_history() -> None:
+    rows = build_symbol_dimension_rows(parse_symbol_versions(_sample_config()))
+
+    row = find_symbol_dimension_row_as_of(
+        rows,
+        symbol="AAPL",
+        source="stooq",
+        as_of=datetime(2023, 12, 31, 23, 59, 59, tzinfo=timezone.utc),
+    )
+
+    assert row is None
 
 
 def test_duplicate_effective_dates_are_rejected() -> None:
