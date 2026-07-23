@@ -158,6 +158,35 @@ def validate_symbol_dimension_rows(rows: list[SymbolDimensionRow]) -> None:
                 raise ValueError(f"Overlapping effective intervals for {symbol}/{source}")
 
 
+def find_symbol_dimension_row_as_of(
+    rows: list[SymbolDimensionRow],
+    *,
+    symbol: str,
+    source: str,
+    as_of: datetime,
+) -> SymbolDimensionRow | None:
+    """Return the symbol version valid at ``as_of``, using half-open intervals."""
+    validate_symbol_dimension_rows(rows)
+    canonical_symbol = symbol.strip().upper()
+    canonical_source = source.strip().lower()
+    effective_at = _parse_effective_timestamp(as_of)
+
+    matches = [
+        row
+        for row in rows
+        if row.symbol == canonical_symbol
+        and row.source == canonical_source
+        and row.effective_from <= effective_at
+        and (row.effective_to is None or effective_at < row.effective_to)
+    ]
+    if len(matches) > 1:
+        raise ValueError(
+            f"Multiple symbol dimension rows match "
+            f"{canonical_symbol}/{canonical_source} at {_format_timestamp(effective_at)}"
+        )
+    return matches[0] if matches else None
+
+
 def build_record_hash(version: SymbolVersion) -> str:
     payload = {
         "asset_class": version.asset_class,
