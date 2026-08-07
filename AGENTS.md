@@ -33,7 +33,7 @@ make readiness-check
 Expected test suite result:
 
 ```text
-54 passed
+All collected tests pass.
 ```
 
 When Docker is available, validate the local source-to-warehouse loop:
