@@ -42,6 +42,16 @@ VALUE_RULES = {
 }
 
 
+def _positive_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be an integer greater than zero") from exc
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be greater than zero")
+    return parsed
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the local end-to-end risk pipeline demo.")
     parser.add_argument(
@@ -68,15 +78,15 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--window-minutes",
-        type=int,
+        type=_positive_int,
         default=5,
-        help="Window size in minutes for aggregation.",
+        help="Window size in minutes for aggregation. Must be greater than zero.",
     )
     parser.add_argument(
         "--vol-window",
-        type=int,
+        type=_positive_int,
         default=5,
-        help="Rolling window length for volatility.",
+        help="Rolling window length for volatility. Must be greater than zero.",
     )
     parser.add_argument(
         "--summary-json",
@@ -177,6 +187,15 @@ def _validate_and_normalize(payload: dict[str, Any]) -> dict[str, Any]:
     return event.model_dump()
 
 
+def _validate_window_options(window_minutes: int, vol_window: int) -> None:
+    for name, value in (
+        ("window_minutes", window_minutes),
+        ("vol_window", vol_window),
+    ):
+        if value <= 0:
+            raise ValueError(f"{name} must be greater than zero")
+
+
 def _evaluate_threshold(value: float, warn: float | None, critical: float | None) -> str:
     if critical is not None and value >= critical:
         return "critical"
@@ -265,6 +284,8 @@ def run_pipeline(
     lock_stale_seconds: int | None = None,
     lineage_json_path: Path | None = None,
 ) -> dict[str, Any]:
+    _validate_window_options(window_minutes, vol_window)
+
     run_id = str(uuid4())
     raw_payloads = _load_input(input_path)
     external_signal_records = _load_external_signal_records(signals_path)
