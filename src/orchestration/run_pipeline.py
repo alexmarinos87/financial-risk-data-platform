@@ -168,7 +168,7 @@ def _load_input(path: Path | None) -> list[dict[str, Any]]:
         return _sample_events()
     with path.open("r", encoding="utf-8") as handle:
         data = json.load(handle)
-    if not isinstance(data, list):
+    if not isinstance(data, list) or any(not isinstance(record, dict) for record in data):
         raise ValueError("Input JSON must be a list of event objects.")
     return data
 
