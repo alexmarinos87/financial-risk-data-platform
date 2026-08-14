@@ -90,8 +90,16 @@ def test_run_pipeline_cli_creates_summary_parent_directory(
 
     captured = capsys.readouterr()
     assert "Pipeline run summary" in captured.out
+    assert (
+        "Event flow: 7 input -> 6 after deduplication "
+        "(duplicate events: 1, late events: 1)" in captured.out
+    )
     with summary_path.open("r", encoding="utf-8") as handle:
         summary = json.load(handle)
+    assert summary["input_events"] == 7
+    assert summary["deduped_events"] == 6
+    assert summary["duplicate_events"] == 1
+    assert summary["late_events"] == 1
     assert summary["raw_events"] == 6
     assert summary["curated_records"] == 9
     assert summary["required_fields_status"] == "ok"
@@ -107,6 +115,22 @@ def test_run_pipeline_cli_creates_summary_parent_directory(
     assert lineage["layers"][2]["datasets"][0]["dataset"] == (
         "risk_platform.finance_risk_semantic_model"
     )
+
+    run_pipeline_main()
+
+    replay_output = capsys.readouterr().out
+    assert (
+        "Event flow: 7 input -> 6 after deduplication "
+        "(duplicate events: 1, late events: 1)" in replay_output
+    )
+    with summary_path.open("r", encoding="utf-8") as handle:
+        replay_summary = json.load(handle)
+    assert replay_summary["input_events"] == 7
+    assert replay_summary["deduped_events"] == 6
+    assert replay_summary["duplicate_events"] == 1
+    assert replay_summary["late_events"] == 1
+    assert replay_summary["raw_events"] == 0
+    assert replay_summary["curated_records"] == 0
 
 
 def test_run_pipeline_materializes_all_curated_datasets(tmp_path: Path) -> None:
