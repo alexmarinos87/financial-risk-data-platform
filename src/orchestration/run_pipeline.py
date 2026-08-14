@@ -551,6 +551,10 @@ def run_pipeline(
 
     return {
         "pipeline_run_id": run_id,
+        "input_events": total_events,
+        "deduped_events": len(deduped),
+        "duplicate_events": total_events - len(deduped),
+        "late_events": late_count,
         "raw_events": raw_written,
         "curated_records": curated_written,
         "curated_records_by_dataset": curated_writes,
@@ -588,6 +592,12 @@ def main() -> None:
             json.dump(summary, handle, indent=2, sort_keys=True, default=str)
 
     print("Pipeline run summary")
+    print(
+        f"Event flow: {summary['input_events']} input -> "
+        f"{summary['deduped_events']} after deduplication "
+        f"(duplicate events: {summary['duplicate_events']}, "
+        f"late events: {summary['late_events']})"
+    )
     print(f"Raw events written: {summary['raw_events']}")
     print(f"Curated records written: {summary['curated_records']}")
     print(f"Partitions: {summary['partitions']}")

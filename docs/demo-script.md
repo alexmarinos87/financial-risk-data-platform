@@ -21,8 +21,9 @@ Use this when the conversation is time-boxed:
 1. State the contract: source events become validated raw parquet, curated risk
    datasets, and PostgreSQL-style serving tables.
 2. Run `make readiness-check`.
-3. Point to the summary values: 7 source records become 6 raw events, 9 curated
-   records, 1 duplicate, and 1 late event.
+3. Point to the event flow: 7 input records become 6 records after
+   deduplication, including 1 duplicate and 1 late event. Then distinguish that
+   processing evidence from the 6 raw and 9 curated records physically written.
 4. Show `src/orchestration/run_pipeline.py` for validation, deduplication,
    partition locking, and writes.
 5. Show `src/storage/s3_writer.py` for deterministic partitioned output.
@@ -70,9 +71,14 @@ Use this when the conversation is time-boxed:
      --lineage-json .demo/lineage.json
    ```
 
-   Call out the summary values: raw events written, curated records written,
-   duplicate rate, late rate, data quality status, affected partitions, and
-   latest risk metrics.
+   Call out the event flow separately from the write counts: the demo processes
+   7 input events, keeps 6 after deduplication, and writes 6 raw plus 9 curated
+   records. Duplicate rate, late rate, data quality status, affected partitions,
+   and latest risk metrics remain visible alongside those counts.
+
+   Run the same command again to demonstrate idempotency. The event flow remains
+   7 input events to 6 after deduplication, while the raw and curated write counts
+   become zero because the deterministic output files already exist.
 
    The demo fixture intentionally includes one duplicate business event and one
    late event. With the strict demo thresholds, those rates are reported as
