@@ -258,64 +258,76 @@ For one workstation, use a registry beneath the absolute Git common directory
 returned by `git rev-parse --path-format=absolute --git-common-dir`. Do not put
 the registry in a per-worktree `.sandbox` directory.
 
-1. Generate a run UUID and random fencing token. Atomically acquire the fixed
-   repository lease `<git-common-dir>/overnight-candidates/active` with one
-   `mkdir`, then atomically write redacted owner metadata: run UUID, process
-   identity, base SHA, selected Manifest ID and hash, start time, deadline, and
-   fencing token. If `active` already exists, perform a no-op even when it names
-   a different manifest.
-2. Derive the manifest record key as the lowercase hexadecimal SHA-256 of the
-   UTF-8 Manifest ID only. Store the separately calculated full-blob manifest
-   hash in every claim and terminal record.
-3. While holding `active` but before acquiring a manifest claim, recheck the
-   claim and terminal paths. If exactly one well-formed record exists, verify
-   its Manifest ID and blob hash and leave it untouched. A matching ID and hash
-   is a duplicate no-op; a different hash is unauthorized ID reuse. In either
-   case, recheck the owned `active` run UUID and fencing token and atomically
-   move only that lease to a unique no-op or denied history path. This is the
-   sole finalization path that does not require a manifest claim owned by the
-   current run. If both records exist, either is malformed, or the fenced lease
-   move fails, retain `active` for human recovery.
-4. When neither record exists, atomically acquire
-   `<git-common-dir>/overnight-candidates/claims/<record-key>` with one `mkdir`
-   and atomically bind the Manifest ID and hash plus the current run UUID and
-   fencing token into it. If acquisition reports an existing record, repeat the
-   pre-claim state inspection in step 3; on any other acquisition error, retain
-   `active` for human recovery.
-5. Before every phase, mutation, and external write, verify that both `active`
-   and the single manifest claim name the expected Manifest ID and hash, current
-   run UUID, and fencing token, and verify that no terminal record exists. That
-   exact owned claim is the normal running state; renew both owner timestamps
-   and continue. Any terminal record, foreign or mismatched claim, malformed
-   record, or simultaneous claim and terminal is an invariant failure: retain
-   `active` for human recovery and do not act. The deadline is the smaller of
-   the manifest runtime and its authorization expiry.
-6. Never remove a stale or malformed repository lease, claim, or terminal
-   automatically. The human engineer inspects and explicitly resolves it before
-   issuing a new manifest ID to retry.
-7. Bind the repository-lease identity and fencing token into validation evidence
-   and every publisher request. The trusted policy verifier and publisher must
-   re-read both lease records and reject an owner, token, deadline, or manifest
-   mismatch immediately before acting.
-8. Append redacted phase records inside the manifest claim after commits and
-   external writes. A push is not terminal while draft-PR creation is still
-   pending.
-9. For a normal terminal outcome (successful local completion, an ordinary
-   implementation or validation failure, or a publication outcome), first prove
-   that `active` and the claim still match the current Manifest ID and hash, run
-   UUID, and fencing token and that no terminal record exists. Then atomically
-   move the manifest claim to
-   `<git-common-dir>/overnight-candidates/terminal/<record-key>` and write the
-   final state. Then, only after rechecking the owner and fencing token,
-   atomically move `active` to a unique history path for that run. If either
-   finalization fails, leave the repository lease in place and require human
-   recovery rather than allowing a second writer. Acquisition, metadata,
-   ownership, malformed-record, and other invariant failures described above do
-   not use this normal finalization path and retain `active`.
+`scripts/overnight_lease.py` now implements the credential-free local registry
+primitive for Linux and WSL. Its public boundary accepts an absolute, trusted
+Git common directory, one already verified `ProtectedBaseManifest`, and the
+protected-policy blob SHA-256. It does not inspect candidate content, expose a
+general release or context-manager API, invoke Git, wire a scheduler, authorize
+publication, or verify publisher intent/results. A final external state is a
+bounded caller assertion for durable recovery only, not proof that a branch or
+draft PR exists. Scheduler, commit/push phase-evidence, isolation, and publisher
+integrations remain deferred, and all returned evidence keeps isolation,
+publisher verification, and publication authority false.
+
+1. Acquisition derives the record key as SHA-256 of the exact ASCII Manifest
+   ID, generates a run UUID and 256-bit random fence nonce, and calculates the
+   immutable deadline as the smaller of the manifest runtime and authorization
+   expiry. The raw nonce exists only in the frozen, repr-hidden in-memory handle;
+   durable canonical JSON records contain its SHA-256 digest, never the nonce.
+2. The registry uses directory-file-descriptor-relative Linux operations below
+   `<git-common-dir>/overnight-candidates`, exact `0700` directories and `0600`
+   regular files, owner-UID/link/device checks, `O_NOFOLLOW`, `O_CLOEXEC`, and
+   `O_DIRECTORY`. JSON has an exact schema and canonical byte encoding; duplicate
+   keys, non-finite values, non-canonical encodings, wrong types, links, special
+   files, permission drift, and unexpected entries fail closed.
+3. One no-clobber `mkdir` acquires `active`. The owner, heartbeat phase zero, and
+   manifest claim are written and fsynced before `OWNED` is returned. An existing
+   `active` always returns `BUSY_NOOP` without reading through, mutating, timing
+   out, or taking it over. There is no automatic stale-owner recovery.
+4. A complete matching claim or terminal record returns `DUPLICATE_NOOP`; the
+   same Manifest ID with a different full-blob hash returns
+   `DENIED_ID_REUSE`. The temporary owned active record is archived only after
+   its immutable release record is durable. A malformed, conflicting, or partial
+   state returns `RECOVERY_REQUIRED` and retains `active` for human inspection.
+5. Every checkpoint reopens the registry and verifies the Git-common-directory
+   identity, raw-nonce digest, process/run identity, Manifest ID and blob hash,
+   base commit, policy hash, fixed deadline, claim, absence of terminal state,
+   and byte-identical active/claim heartbeat histories. It appends the next
+   integer phase to both histories without changing or extending the deadline.
+   Clock rollback, a phase gap, an expired deadline, or any mismatch cannot
+   authorize work.
+6. Normal finalization accepts only `completed`, `implementation_failed`,
+   `validation_failed`, or `publication_ambiguous`, plus the exact external
+   state `none`, `branch_only`, `draft_pr`, or `unknown`. It writes and fsyncs
+   immutable `result.json` inside the owned claim before moving the claim to its
+   terminal key. It then writes and fsyncs `release.json` inside `active` before
+   archiving `active` under the run UUID. Both moves use Linux `renameat2` with
+   `RENAME_NOREPLACE`; an unavailable primitive, destination collision, or any
+   crash prefix retains a fenced recovery state and never overwrites evidence.
+7. A durable claim consumes the Manifest ID even if its owner crashes; its later
+   terminal record preserves that single-use outcome. Heartbeats are liveness
+   evidence only and never authorize stale cleanup. The trusted controller must
+   keep the raw handle out of candidate processes and bind redacted lease
+   evidence into later validation and publisher requests when those adapters
+   exist.
+
+A future trusted controller must require a successful checkpoint immediately
+before every phase, repository mutation, and external write. The current module
+does not yet connect phases to commits, validation evidence, pushes, or publisher
+results. Finalization may durably record an outcome after the deadline because
+it reduces authority; it never authorizes more work. Callers may serialize or
+log only each result's `redacted_evidence()`. They must never serialize the raw
+handle, use generic dataclass/`asdict` serialization, or expose it to candidate
+code. Competing controllers may call acquire and receive a no-op. After
+`OWNED`, the owning controller must call checkpoint and finalize serially from
+that same process and thread; this v1 API does not arbitrate overlapping calls
+made with the same owned handle.
 
 This registry coordinates scheduler worktrees sharing one Git common directory.
 A multi-host scheduler requires an external transactional lease and is outside
-this runbook.
+this runbook. This local registry is coordination and durable evidence, not a
+security boundary against another process running as the same operating-system
+user; filesystem/process isolation remains an activation prerequisite.
 
 ## Implementation, Review, And Green Checkpoints
 
