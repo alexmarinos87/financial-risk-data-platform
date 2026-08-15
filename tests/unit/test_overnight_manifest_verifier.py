@@ -438,6 +438,11 @@ def test_committed_history_binds_every_allowed_commit_and_ignores_dirty_worktree
     evidence = result.redacted_evidence()
 
     assert result.commit_shas == (first, head)
+    assert len(result.edges) == 2
+    assert result.edges[0].changes[0].new is not None
+    assert result.edges[0].changes[0].new.content == b"VALUE = 1\n"
+    assert len(result.commit_object_sha256s) == 2
+    assert result.tree_object_sha256s
     assert result.touched_paths == (
         "src/analytics/daily_risk.py", "tests/unit/test_daily_risk.py"
     )
@@ -446,6 +451,7 @@ def test_committed_history_binds_every_allowed_commit_and_ignores_dirty_worktree
     assert evidence["object_store_isolation_verified"] is False
     assert evidence["publication_authorized"] is False
     assert "sentinel" not in json.dumps(evidence)
+    assert "VALUE = 1" not in repr(result)
 
 
 @pytest.mark.parametrize("grafted", [False, True])
