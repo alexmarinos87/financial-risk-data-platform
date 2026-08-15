@@ -186,8 +186,10 @@ Validation:
 Use `docs/agent-roles.md` to split larger work into bounded roles. Keep write
 scopes separate and require a final lead-engineer review before merge.
 
-For overnight work, use `docs/overnight-sandbox.md`. The overnight flow is
-validation-first and must not push, merge, deploy, or run cloud commands.
+For unattended validation, use `docs/overnight-sandbox.md`; it never publishes.
+For an explicitly approved scheduled candidate, use
+`docs/overnight-development.md`. Its publishing mode remains disabled until the
+runbook's repository-protection and least-privilege credential gates are proven.
 
 For continued improvement work, use `docs/iteration-loop.md` and pick one item
 from `docs/iteration-backlog.md`. Keep each iteration to one coherent change

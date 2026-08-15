@@ -36,16 +36,19 @@ engineer owns scope, review, merge, deployment, and production-risk decisions.
 
 ## Overnight Use
 
-Overnight work should be validation-first. A safe overnight loop can run checks,
-produce logs, and surface failures for review in the morning.
+Overnight work is validation-only by default. A safe sandbox loop can run
+checks, produce logs, and surface failures for review in the morning.
 
 Do not leave a role unattended with permission to:
 
-1. Push to a remote branch.
+1. Push to a remote branch outside the separately activated, manifest-bound
+   exception in `docs/overnight-development.md`.
 2. Merge a pull request.
 3. Trigger deployment workflows.
 4. Run `terraform apply`.
 5. Use cloud credentials.
 6. Delete data outside generated local output paths.
 
-Use `docs/overnight-sandbox.md` for the safe local runbook.
+Use `docs/overnight-sandbox.md` for validation. The scheduled candidate runbook
+may authorize one branch and draft PR only after all protection, credential,
+scope, and evidence gates pass; it never authorizes merge or deployment.
