@@ -165,10 +165,29 @@ a successful no-op. The scheduler must not invent a replacement task.
 the low-risk `analytics`, `processing`, or `benchmarking` blocks, exact paths,
 fixed validation target identifiers, hard budgets, and a UTC authorization
 window of at most 24 hours. This parser does not read a worktree, Git ref, or
-network. The next protected-base
-adapter must load one regular `100644` blob from the exact fetched commit, hash
-those bytes, and pass them unchanged to this parser. A valid contract is not
-publication authority.
+network. Its `verify_protected_base_manifest` adapter requires a full commit SHA
+equal to the local `origin/main` ref before and after verification, derives the
+path from the Manifest ID, and loads one size-bounded `100644` Git blob. It
+independently recomputes the repository-format Git object ID, hashes the exact
+bytes, and emits redacted evidence with
+`publication_authorized: false`.
+
+The adapter is a Linux/WSL boundary that uses `/usr/bin/git`, a symlink-free
+repository-root path, a minimal child environment, bounded output, and disabled
+Git protocols. It rejects partial/promisor repositories before object reads.
+It relies on the trusted fetch and local object store for commit/tree parsing;
+the selected blob gets the additional independent object-ID check. It never
+fetches and cannot prove that the local ref is fresh, that GitHub protects
+`main`, or that a human approved the commit. The trusted orchestrator owns those
+checks. A valid contract is not publication authority.
+
+Invoke the repository adapter with `.venv/bin/python
+scripts/overnight_manifest_verifier.py
+--repository <root> --base-sha <full-sha> --manifest-id <id>`. Exit `0` emits
+valid-but-non-authorizing evidence. Exit `2` is a controlled denial that the
+scheduler maps to a successful no-mutation outcome. Exit `1` is an operational
+verifier failure that requires investigation; neither nonzero outcome permits a
+branch, edit, commit, or external write.
 
 Schema version 2 does not accept free-form commands or cross-block interfaces.
 A later trusted runner maps its four validation identifiers to fixed argument
@@ -458,9 +477,11 @@ docs/architecture.md, docs/overnight-development.md,
 docs/security-protocols.md, docs/engineering-delivery-workflow.md,
 docs/agent-roles.md, and docs/iteration-backlog.md from that exact commit with
 git show. Also read `.github/overnight-publication-policy.json` from that exact
-commit and hash its complete Git blob. Resolve the selected manifest link, read
-its entire Git blob from the same commit, and hash the exact bytes. Never select
-from local or uncommitted copies.
+commit and hash its complete Git blob. Resolve the selected Manifest ID and run
+the protected-base manifest adapter against the recorded SHA. Require its
+redacted result to bind the exact blob and recheck local `origin/main`; never
+select from local or uncommitted copies. Independently prove the fetch and
+GitHub protection because the adapter does not.
 
 Select exactly one unexpired backlog item whose status is exactly
 "approved for overnight development" and whose manifest is complete. If none
