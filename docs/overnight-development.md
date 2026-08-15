@@ -352,16 +352,25 @@ Count the candidate budget from the staged change against the recorded base:
 git diff --cached --numstat -z <base-sha>
 ```
 
-Parse the NUL-delimited records and sum additions and deletions. Reject `-`
-binary counts, submodules, symlinks, or any unlisted path. After each commit,
-calculate the content-complete fingerprint without logging the patch:
+Parse the NUL-delimited records and sum additions and deletions. Use numstat only
+for paths, binary markers, and lines; the committed tree-snapshot gate rejects
+symlinks and gitlinks. This is a pre-commit line-budget check until the separate
+committed-line adapter exists.
 
-```bash
-git diff --binary --full-index <base-sha>...HEAD | sha256sum
-```
-
-Use pipeline-failure propagation and reject a non-zero Git or hash command; an
-empty or partial fingerprint is never evidence.
+After each commit, call `verify_committed_candidate_history` with the exact base,
+Manifest ID, and full candidate SHA. It derives the linear parent chain from
+independently rehashed commit bytes and compares every edge using in-memory,
+raw-byte path maps from independently rehashed canonical tree objects. Empty or
+malformed tree topology, unlisted paths, non-regular/non-text blobs, and file or
+commit budget overflow fail closed without logging file content. The observer
+caps each blob at 1 MiB, the unique changed-blob set at 4 MiB, and recursively
+expanded tree graphs by object, byte, entry, depth, and path limits. Its evidence
+explicitly
+leaves line budget, content fingerprint, worktree cleanliness, validation, push
+count, object-store isolation, and publication authority unverified. The trusted
+controller must establish common-object-store isolation before relying on this
+observation in a later gate; this observer does not establish that isolation. A
+candidate cannot proceed merely because this scope gate passes.
 
 A checkpoint is not green until validation is repeated against the exact commit
 tree that would be pushed:
