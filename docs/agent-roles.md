@@ -16,6 +16,7 @@ engineer owns scope, review, merge, deployment, and production-risk decisions.
 | Kubernetes And Delivery Engineer | Container, CI, Kubernetes overlays, deploy workflow hygiene | `Dockerfile`, `.github/workflows/`, `deploy/kubernetes/`, `deploy/README.md` | Apply to clusters, trigger deploy workflows, weaken pod security, or change prod without dev parity | `make security-check && make infrastructure-check` |
 | Quality Reviewer | Tests, linting, generated-data hygiene | `tests/`, `Makefile`, CI checks | Rewrite production logic except for the smallest necessary fix | `make security-check && make readiness-check` |
 | Security Reviewer | Secrets, generated files, cloud guardrails, deploy triggers | Security docs, checks, CI guardrails | Approve risky changes without the lead engineer | `make security-check` |
+| Production Challenger | Failure, retry, concurrency, rollback, operational, and cost assumptions | None during the review pass | Edit the candidate change or present hardening ideas as proven defects | Read-only findings with file references |
 | Demo Narrator | Interview walkthroughs and expected outputs | `README.md`, `docs/`, demo fixtures if needed | Overclaim production usage of scaffolded services | `make readiness-check` when demo behaviour changes |
 
 ## Coordination Rules
@@ -27,6 +28,11 @@ engineer owns scope, review, merge, deployment, and production-risk decisions.
 5. Keep cloud deploys, Terraform apply, branch merges, and destructive database
    actions human-approved.
 6. Require validation evidence in the final handoff.
+7. A role performing an independent review is read-only for that pass. Send
+   accepted fixes back to the assigned writer and re-run affected evidence.
+8. Treat reviewer findings as evidence rather than approval. The delivery lead
+   triages and assembles evidence; the human engineer alone accepts, merges, or
+   authorises deployment.
 
 ## Overnight Use
 

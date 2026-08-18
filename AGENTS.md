@@ -75,6 +75,9 @@ and run the closest local validation that does not require those tools.
    controls.
 11. Use `docs/iteration-loop.md` and `docs/iteration-backlog.md` for continued
    repo iterations.
+12. Treat agent reviews and generated acceptance packages as evidence, not
+    approval. The acceptance decision must remain pending until the engineer
+    understands and explicitly accepts the final diff.
 
 ## Git Workflow
 
