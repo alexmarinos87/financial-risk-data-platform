@@ -1,15 +1,11 @@
 from __future__ import annotations
 
-import hashlib
-import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import duckdb
-import pandas as pd
-
 from ..common.exceptions import StorageError
+from .parquet_io import batch_file_name, create_parquet_file
 from .partitioning import partition_path
 from .storage_config import load_storage_config, validate_storage_config
 
@@ -59,42 +55,6 @@ def _parse_ingest_timestamp(value: Any) -> datetime | None:
     return ts
 
 
-def _to_stable_json(value: Any) -> Any:
-    if isinstance(value, datetime):
-        ts = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
-        return ts.isoformat()
-    if isinstance(value, dict):
-        return {key: _to_stable_json(val) for key, val in sorted(value.items())}
-    if isinstance(value, list):
-        return [_to_stable_json(item) for item in value]
-    return value
-
-
-def _batch_file_name(records: list[dict[str, Any]], file_format: str) -> str:
-    stable_records = [
-        json.dumps(
-            _to_stable_json(record),
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-        for record in records
-    ]
-    payload = "\n".join(sorted(stable_records))
-    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
-    return f"batch_{digest}.{file_format}"
-
-
-def _write_parquet(records: list[dict[str, Any]], path: Path) -> None:
-    df = pd.DataFrame(records)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_suffix(path.suffix + ".tmp")
-    with duckdb.connect() as conn:
-        conn.register("records_df", df)
-        escaped = str(tmp_path).replace("'", "''")
-        conn.execute(f"COPY records_df TO '{escaped}' (FORMAT PARQUET)")
-    tmp_path.replace(path)
-
-
 def write_records(
     records: list[dict],
     *,
@@ -134,13 +94,9 @@ def write_records(
     records_written = 0
     for partition_key, batch in partitioned_batches.items():
         target_dir = dataset_path if partition_key is None else dataset_path / partition_key
-        filename = _batch_file_name(batch, file_format)
+        filename = batch_file_name(batch, file_format)
         target_path = target_dir / filename
-
-        if target_path.exists():
-            continue
-
-        _write_parquet(batch, target_path)
-        records_written += len(batch)
+        if create_parquet_file(batch, target_path):
+            records_written += len(batch)
 
     return records_written

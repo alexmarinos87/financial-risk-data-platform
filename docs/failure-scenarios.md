@@ -102,7 +102,8 @@ Current behaviour:
 
 1. Writes are partitioned by ingest time.
 2. Output file names are derived from record content.
-3. Each write uses a temporary file before replacing the final target.
+3. Each write is staged and checked in a private temporary directory, then
+   linked into place only if the final target is absent.
 4. Existing target files are skipped.
 
 Trade-off:
