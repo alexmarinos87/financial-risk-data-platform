@@ -877,20 +877,15 @@ def _publish_raw_batch(
     return published
 
 
-def write_raw_event_records(
-    records: list[dict[str, Any]],
+def _validated_raw_destination(
     *,
     dataset_path: Path,
     raw_base_path: Path,
     storage_base_dir: Path,
     file_format: str,
-) -> int:
+) -> tuple[Path, Path, Path]:
     if file_format != "parquet":
         raise StorageError(f"Unsupported storage format '{file_format}'")
-    incoming = _prepare_incoming(records)
-    if not incoming:
-        return 0
-
     configured_root = _resolved(
         storage_base_dir,
         strict=False,
@@ -910,6 +905,26 @@ def write_raw_event_records(
         raise StorageError("Raw base path must remain beneath storage.base_dir")
     if not _is_beneath(candidate_root, configured_raw_base):
         raise StorageError("Raw dataset must remain beneath its configured raw base path")
+
+    for path, label in (
+        (storage_base_dir, "storage.base_dir"),
+        (raw_base_path, "Raw base path"),
+        (dataset_path, "Raw dataset path"),
+    ):
+        metadata: os.stat_result | None = None
+        metadata_failed = False
+        try:
+            metadata = path.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError:
+            metadata_failed = True
+        if metadata_failed:
+            raise StorageError(f"{label} metadata is unreadable")
+        assert metadata is not None
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+            raise StorageError(f"{label} must be a regular directory")
+
     _assert_no_symlink_components(
         raw_base_path,
         storage_base_dir,
@@ -926,6 +941,43 @@ def write_raw_event_records(
         pass
     if dataset_is_symlink or raw_base_is_symlink:
         raise StorageError("Raw dataset path must not be a symbolic link")
+    return configured_root, configured_raw_base, candidate_root
+
+
+def validate_raw_event_destination(
+    *,
+    dataset_path: Path,
+    raw_base_path: Path,
+    storage_base_dir: Path,
+    file_format: str,
+) -> None:
+    """Validate the non-mutating raw destination boundary before source I/O."""
+
+    _validated_raw_destination(
+        dataset_path=dataset_path,
+        raw_base_path=raw_base_path,
+        storage_base_dir=storage_base_dir,
+        file_format=file_format,
+    )
+
+
+def write_raw_event_records(
+    records: list[dict[str, Any]],
+    *,
+    dataset_path: Path,
+    raw_base_path: Path,
+    storage_base_dir: Path,
+    file_format: str,
+) -> int:
+    configured_root, _, _ = _validated_raw_destination(
+        dataset_path=dataset_path,
+        raw_base_path=raw_base_path,
+        storage_base_dir=storage_base_dir,
+        file_format=file_format,
+    )
+    incoming = _prepare_incoming(records)
+    if not incoming:
+        return 0
 
     created = True
     try:
@@ -1015,4 +1067,4 @@ def write_raw_event_records(
         return written
 
 
-__all__ = ["write_raw_event_records"]
+__all__ = ["validate_raw_event_destination", "write_raw_event_records"]

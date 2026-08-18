@@ -17,7 +17,7 @@ from src.common.exceptions import RawEventConflictError, StorageError
 from src.ingestion.alpha_vantage_client import parse_alpha_vantage_daily_response
 from src.storage.parquet_io import create_parquet_file
 from src.storage.partitioning import partition_path
-from src.storage.s3_writer import write_records
+from src.storage.s3_writer import validate_raw_storage_destination, write_records
 
 
 def _build_storage_config(tmp_path: Path) -> dict:
@@ -445,6 +445,33 @@ def test_raw_dataset_rejects_dataset_traversal_and_redacts_filesystem_errors(
     assert error.__context__ is None
     assert str(sentinel) not in str(error)
     assert str(sentinel) not in rendered
+
+
+def test_raw_destination_preflight_is_non_mutating_and_rejects_non_directories(
+    tmp_path: Path,
+) -> None:
+    config = _build_storage_config(tmp_path)
+
+    assert validate_raw_storage_destination(config) == "market_events"
+    assert list(tmp_path.iterdir()) == []
+
+    dataset = tmp_path / "raw" / "market_events"
+    dataset.parent.mkdir(parents=True)
+    dataset.write_text("not a directory", encoding="utf-8")
+
+    with pytest.raises(StorageError, match="must be a regular directory"):
+        validate_raw_storage_destination(config)
+
+
+def test_raw_writer_validates_destination_before_empty_input_return(tmp_path: Path) -> None:
+    with pytest.raises(StorageError, match="Unsupported storage format"):
+        raw_event_writer.write_raw_event_records(
+            [],
+            dataset_path=tmp_path / "raw" / "market_events",
+            raw_base_path=tmp_path / "raw",
+            storage_base_dir=tmp_path,
+            file_format="csv",
+        )
 
 
 @pytest.mark.parametrize("path_field", ["base_dir", "raw_base_path"])
