@@ -1,5 +1,6 @@
-from datetime import datetime
-from pydantic import BaseModel, Field
+from datetime import datetime, timezone
+
+from pydantic import AwareDatetime, BaseModel, Field, field_validator
 
 
 class MarketEvent(BaseModel):
@@ -7,6 +8,11 @@ class MarketEvent(BaseModel):
     symbol: str
     price: float
     volume: int
-    ts_event: datetime
-    ts_ingest: datetime
+    ts_event: AwareDatetime
+    ts_ingest: AwareDatetime
     source: str = Field(default="stooq")
+
+    @field_validator("ts_event", "ts_ingest")
+    @classmethod
+    def _normalise_timestamp_to_utc(cls, value: datetime) -> datetime:
+        return value.astimezone(timezone.utc)
