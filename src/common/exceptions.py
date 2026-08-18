@@ -10,5 +10,9 @@ class StorageError(Exception):
     pass
 
 
+class RawEventConflictError(StorageError):
+    pass
+
+
 class OverlapError(Exception):
     pass

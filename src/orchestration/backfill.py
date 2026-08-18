@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
@@ -18,7 +19,26 @@ _HOURLY_WINDOW_ALIASES = {"hourly", "hour", "1h"}
 _DEFAULT_THRESHOLDS_PATH = Path("config/risk_thresholds.yaml")
 _DEFAULT_STORAGE_CONFIG_PATH = Path("config/storage.yaml")
 _REPLAY_COLUMNS = ["event_id", "symbol", "price", "volume", "ts_event", "ts_ingest", "source"]
+_REPLAY_TIMESTAMP_COLUMNS = {"ts_event", "ts_ingest"}
 _RESUME_STATE_PATH = Path(".orchestration_state/backfill_resume.json")
+_UTC_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+
+def _json_replay_value(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, Decimal):
+        return float(value)
+    return value
+
+
+def _timestamp_from_epoch_microseconds(value: Any) -> datetime:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError("Raw backfill timestamp is not an epoch-microsecond integer")
+    try:
+        return _UTC_EPOCH + timedelta(microseconds=value)
+    except (OverflowError, TypeError, ValueError):
+        raise ValueError("Raw backfill timestamp is outside the supported range") from None
 
 
 def _normalize_window(window: str) -> str:
@@ -51,15 +71,32 @@ def _load_partition_records(partition_dir: Path) -> list[dict[str, Any]]:
 
     escaped_paths = [str(path).replace("'", "''") for path in parquet_files]
     quoted_paths = ", ".join(f"'{path}'" for path in escaped_paths)
-    select_list = ", ".join(_REPLAY_COLUMNS)
+    select_list = ", ".join(
+        f"epoch_us({column}) AS {column}"
+        if column in _REPLAY_TIMESTAMP_COLUMNS
+        else column
+        for column in _REPLAY_COLUMNS
+    )
     with duckdb.connect() as conn:
-        df = conn.execute(
+        cursor = conn.execute(
             "SELECT "
             f"{select_list} "
             f"FROM read_parquet([{quoted_paths}], union_by_name=true) "
             "ORDER BY ts_ingest, event_id"
-        ).df()
-    return json.loads(df.to_json(orient="records", date_format="iso"))
+        )
+        rows = cursor.fetchall()
+        columns = [description[0] for description in cursor.description]
+    return [
+        {
+            column: _json_replay_value(
+                _timestamp_from_epoch_microseconds(value)
+                if column in _REPLAY_TIMESTAMP_COLUMNS
+                else value
+            )
+            for column, value in zip(columns, row, strict=True)
+        }
+        for row in rows
+    ]
 
 
 def _load_resume_state(path: Path) -> dict[str, Any]:

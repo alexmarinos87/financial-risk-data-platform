@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from uuid import UUID
 
-from src.orchestration.backfill import run_backfill
+import pytest
+
+from src.orchestration.backfill import _load_partition_records, run_backfill
 from src.orchestration.locks import acquire_partition_locks, release_partition_locks
 from src.storage.s3_writer import write_records
 from tests.storage_config_helpers import build_storage_config, write_storage_config
@@ -184,3 +187,63 @@ def test_run_backfill_resumes_after_blocked_overlap(tmp_path: Path) -> None:
         vol_window=2,
     )
     assert third == []
+
+
+def test_backfill_preserves_raw_identity_precision(tmp_path: Path) -> None:
+    storage_config = build_storage_config(tmp_path, include_external_signal_summary=False)
+    storage_config_path = write_storage_config(
+        tmp_path,
+        include_external_signal_summary=False,
+    )
+    precise_event = {
+        "event_id": "precise-event",
+        "symbol": "AAPL",
+        "price": 100.1234567890123,
+        "volume": 10,
+        "ts_event": datetime(
+            2025,
+            1,
+            20,
+            10,
+            1,
+            2,
+            123456,
+            tzinfo=timezone.utc,
+        ),
+        "ts_ingest": datetime(2025, 1, 20, 10, 2, tzinfo=timezone.utc),
+        "source": "stooq",
+    }
+    assert write_records([precise_event], kind="raw", storage_config=storage_config) == 1
+
+    result = run_backfill(
+        "2025-01-20T10:00:00Z",
+        "2025-01-20T10:00:00Z",
+        "hourly",
+        storage_config_path=storage_config_path,
+        thresholds_path=Path("config/risk_thresholds.yaml"),
+        vol_window=2,
+    )
+
+    assert len(result) == 1
+    assert result[0]["status"] == "success"
+    assert result[0]["records_replayed"] == 1
+    assert result[0]["raw_events"] == 0
+
+
+def test_backfill_partition_read_does_not_require_pytz(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage_config = build_storage_config(tmp_path, include_external_signal_summary=False)
+    _seed_raw_partitions(storage_config)
+    partition_dir = (
+        Path(storage_config["storage"]["raw"]["base_path"])
+        / storage_config["storage"]["raw"]["dataset"]
+        / "year=2025/month=01/day=20/hour=10"
+    )
+
+    monkeypatch.setitem(sys.modules, "pytz", None)
+
+    records = _load_partition_records(partition_dir)
+    assert len(records) == 3
+    assert records[0]["ts_event"].endswith("+00:00")

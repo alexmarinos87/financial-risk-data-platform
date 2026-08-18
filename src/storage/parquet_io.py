@@ -51,7 +51,12 @@ def _fsync_directory(path: Path) -> None:
         os.close(directory_fd)
 
 
-def create_parquet_file(records: list[dict[str, Any]], target_path: Path) -> bool:
+def create_parquet_file(
+    records: list[dict[str, Any]],
+    target_path: Path,
+    *,
+    maximum_bytes: int | None = None,
+) -> bool:
     """Publish without replacement; an fsync error may leave a valid final link."""
 
     target_path.parent.mkdir(parents=True, exist_ok=True)
@@ -93,6 +98,9 @@ def create_parquet_file(records: list[dict[str, Any]], target_path: Path) -> boo
             stored_count = int(count_row[0])
         if stored_columns != list(frame.columns) or stored_count != len(records):
             raise StorageError("Staged parquet output failed validation")
+        staged_bytes = temporary_path.stat().st_size
+        if maximum_bytes is not None and staged_bytes > maximum_bytes:
+            raise StorageError("Staged parquet output exceeds its publication byte limit")
         temporary_path.chmod(0o600)
         with temporary_path.open("rb") as handle:
             os.fsync(handle.fileno())

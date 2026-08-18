@@ -54,6 +54,18 @@ def test_create_parquet_file_never_overwrites_existing_target(tmp_path: Path) ->
     assert target.read_bytes() == original
 
 
+def test_create_parquet_file_enforces_byte_limit_before_publication(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "dataset" / "batch.parquet"
+
+    with pytest.raises(StorageError, match="byte limit"):
+        create_parquet_file([{"value": "payload"}], target, maximum_bytes=1)
+
+    assert not target.exists()
+    assert not list(target.parent.glob(".parquet-stage-*"))
+
+
 def test_concurrent_publishers_create_one_complete_file(tmp_path: Path) -> None:
     target = tmp_path / "dataset" / "batch.parquet"
     barrier = Barrier(2)
