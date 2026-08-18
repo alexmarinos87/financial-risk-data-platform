@@ -16,6 +16,7 @@ from scripts.overnight_manifest_verifier import (
     VerifierFailure,
     main,
     validate_manifest_blob,
+    verify_committed_candidate_history,
     verify_protected_base_manifest,
 )
 
@@ -159,6 +160,15 @@ def _git(repository: Path, *arguments: str) -> str:
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
     return result.stdout.strip()
+
+
+def _hash_object(repository: Path, kind: str, content: bytes) -> str:
+    result = subprocess.run(
+        ["/usr/bin/git", "hash-object", "--literally", "-w", "-t", kind, "--stdin"],
+        cwd=repository, check=True, input=content, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    return result.stdout.decode("ascii").strip()
 
 
 def _repository(tmp_path: Path, content: bytes | None = None, *, executable: bool = False) -> tuple[Path, str]:
@@ -400,3 +410,212 @@ def test_cli_success_and_operational_failure_are_distinct(
     assert result == 1
     assert failure.out == ""
     assert json.loads(failure.err) == {"status": "error", "reason": "VERIFIER_FAILURE"}
+
+
+def _candidate_commit(repository: Path, path: str, content: bytes, message: str) -> str:
+    target = repository / path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(content)
+    _git(repository, "add", "--", path)
+    _git(repository, "commit", "-q", "-m", message)
+    return _git(repository, "rev-parse", "HEAD")
+
+
+def test_committed_history_binds_every_allowed_commit_and_ignores_dirty_worktree(
+    tmp_path: Path,
+) -> None:
+    repository, base = _repository(tmp_path)
+    first = _candidate_commit(
+        repository, "src/analytics/daily_risk.py", b"VALUE = 1\n", "Source checkpoint"
+    )
+    head = _candidate_commit(
+        repository, "tests/unit/test_daily_risk.py", b"def test_value():\n    assert 1\n", "Test checkpoint"
+    )
+    (repository / "src/analytics/daily_risk.py").write_text("dirty sentinel", encoding="utf-8")
+    (repository / "sentinel-secret-untracked").write_text("not evidence", encoding="utf-8")
+
+    result = verify_committed_candidate_history(repository, base, MANIFEST_ID, head, now=NOW)
+    evidence = result.redacted_evidence()
+
+    assert result.commit_shas == (first, head)
+    assert result.touched_paths == (
+        "src/analytics/daily_risk.py", "tests/unit/test_daily_risk.py"
+    )
+    assert evidence["changed_line_budget_verified"] is False
+    assert evidence["content_fingerprint_verified"] is False
+    assert evidence["object_store_isolation_verified"] is False
+    assert evidence["publication_authorized"] is False
+    assert "sentinel" not in json.dumps(evidence)
+
+
+@pytest.mark.parametrize("grafted", [False, True])
+def test_committed_history_rejects_forbidden_path_even_when_later_removed(
+    tmp_path: Path, grafted: bool
+) -> None:
+    repository, base = _repository(tmp_path)
+    _candidate_commit(repository, "docs/forbidden.md", b"temporary\n", "Forbidden checkpoint")
+    (repository / "docs/forbidden.md").unlink()
+    _git(repository, "add", "-u", "--", "docs/forbidden.md")
+    _git(repository, "commit", "-q", "-m", "Remove forbidden path")
+    head = _candidate_commit(
+        repository, "src/analytics/daily_risk.py", b"VALUE = 1\n", "Allowed checkpoint"
+    )
+    if grafted:
+        (repository / ".git/info/grafts").write_text(f"{head} {base}\n", encoding="ascii")
+
+    expected = VerifierFailure if grafted else ManifestDenied
+    with pytest.raises(expected):
+        verify_committed_candidate_history(repository, base, MANIFEST_ID, head, now=NOW)
+
+
+@pytest.mark.parametrize("kind", ["binary", "executable", "symlink", "lfs"])
+def test_committed_history_rejects_non_regular_or_nonlocal_text(
+    tmp_path: Path, kind: str
+) -> None:
+    repository, base = _repository(tmp_path)
+    target = repository / "src/analytics/daily_risk.py"
+    target.parent.mkdir(parents=True)
+    if kind == "symlink":
+        target.symlink_to("sentinel-target")
+    else:
+        content = {
+            "binary": b"bad\0data",
+            "executable": b"VALUE = 1\n",
+            "lfs": (
+                b"version https://hawser.github.com/spec/v1\noid sha256:"
+                + b"a" * 64 + b"\nsize 1\n"
+            ),
+        }[kind]
+        target.write_bytes(content)
+        if kind == "executable":
+            target.chmod(0o755)
+    _git(repository, "add", "--", "src/analytics/daily_risk.py")
+    _git(repository, "commit", "-q", "-m", "Invalid endpoint")
+
+    with pytest.raises(ManifestDenied, match="CANDIDATE_DIFF_INVALID"):
+        verify_committed_candidate_history(
+            repository, base, MANIFEST_ID, _git(repository, "rev-parse", "HEAD"), now=NOW
+        )
+
+
+def test_committed_history_enforces_file_and_commit_budgets(tmp_path: Path) -> None:
+    paths = [
+        "src/analytics/daily_risk.py", "src/analytics/other.py",
+        "tests/unit/test_daily_risk.py",
+    ]
+    repository, base = _repository(
+        tmp_path, _blob(allowed_paths=paths, maximum_changed_files=2, maximum_commits=3)
+    )
+    for index, path in enumerate(paths):
+        head = _candidate_commit(repository, path, f"VALUE = {index}\n".encode(), f"Checkpoint {index}")
+    with pytest.raises(ManifestDenied, match="CANDIDATE_BUDGET_EXCEEDED"):
+        verify_committed_candidate_history(repository, base, MANIFEST_ID, head, now=NOW)
+
+    _candidate_commit(repository, paths[0], b"VALUE = 4\n", "Fourth checkpoint")
+    with pytest.raises(ManifestDenied, match="CANDIDATE_BUDGET_EXCEEDED"):
+        verify_committed_candidate_history(
+            repository, base, MANIFEST_ID, _git(repository, "rev-parse", "HEAD"), now=NOW
+        )
+
+
+def test_committed_history_rejects_empty_abbreviated_and_merge_tips(
+    tmp_path: Path,
+) -> None:
+    repository, base = _repository(tmp_path)
+    with pytest.raises(ManifestDenied):
+        verify_committed_candidate_history(repository, base, MANIFEST_ID, base, now=NOW)
+    with pytest.raises(ManifestDenied, match="INVALID_CANDIDATE_SHA"):
+        verify_committed_candidate_history(repository, base, MANIFEST_ID, base[:12], now=NOW)
+
+    _git(repository, "checkout", "-q", "-b", "side", base)
+    _candidate_commit(repository, "tests/unit/test_daily_risk.py", b"def test_side():\n    pass\n", "Side")
+    _git(repository, "checkout", "-q", "-b", "candidate", base)
+    _candidate_commit(repository, "src/analytics/daily_risk.py", b"VALUE = 1\n", "Candidate")
+    _git(repository, "merge", "-q", "--no-ff", "side", "-m", "Merge")
+    with pytest.raises(ManifestDenied, match="CANDIDATE_HISTORY_INVALID"):
+        verify_committed_candidate_history(
+            repository, base, MANIFEST_ID, _git(repository, "rev-parse", "HEAD"), now=NOW
+        )
+
+
+def test_committed_history_rejects_parent_header_after_author(tmp_path: Path) -> None:
+    repository, base = _repository(tmp_path)
+    normal_head = _candidate_commit(
+        repository, "src/analytics/daily_risk.py", b"VALUE = 1\n", "Allowed checkpoint"
+    )
+    tree = _git(repository, "rev-parse", f"{normal_head}^{{tree}}")
+    malformed = (
+        f"tree {tree}\nauthor Tests <tests@example.invalid> 0 +0000\n"
+        f"parent {base}\ncommitter Tests <tests@example.invalid> 0 +0000\n\nMessage\n"
+    ).encode("ascii")
+    candidate = _hash_object(repository, "commit", malformed)
+    assert _git(repository, "rev-list", "--parents", "-1", candidate) == candidate
+
+    with pytest.raises(ManifestDenied, match="CANDIDATE_HISTORY_INVALID"):
+        verify_committed_candidate_history(repository, base, MANIFEST_ID, candidate, now=NOW)
+
+
+def test_committed_history_rejects_non_lf_commit_headers(tmp_path: Path) -> None:
+    repository, base = _repository(tmp_path)
+    normal_head = _candidate_commit(
+        repository, "src/analytics/daily_risk.py", b"VALUE = 1\n", "Allowed checkpoint"
+    )
+    tree = _git(repository, "rev-parse", f"{normal_head}^{{tree}}")
+    malformed = (
+        f"tree {tree}\r\nparent {base}\nauthor Tests <tests@example.invalid> 0 +0000\n"
+        "committer Tests <tests@example.invalid> 0 +0000\n\nMessage\n"
+    ).encode("ascii")
+    candidate = _hash_object(repository, "commit", malformed)
+
+    with pytest.raises(ManifestDenied, match="CANDIDATE_HISTORY_INVALID"):
+        verify_committed_candidate_history(repository, base, MANIFEST_ID, candidate, now=NOW)
+
+
+def test_committed_history_rejects_substituted_nested_tree_bytes(tmp_path: Path) -> None:
+    repository, base = _repository(tmp_path)
+    (repository / "docs/forbidden.md").write_text("hidden\n", encoding="utf-8")
+    head = _candidate_commit(
+        repository, "src/analytics/daily_risk.py", b"VALUE = 1\n", "Mixed checkpoint"
+    )
+    _git(repository, "add", "--", "docs/forbidden.md")
+    _git(repository, "commit", "--amend", "-q", "--no-edit")
+    head = _git(repository, "rev-parse", "HEAD")
+    candidate_docs = _git(repository, "rev-parse", f"{head}:docs")
+    base_docs = subprocess.run(
+        ["/usr/bin/git", "cat-file", "tree", f"{base}:docs"], cwd=repository,
+        check=True, stdout=subprocess.PIPE,
+    ).stdout
+    loose_tree = repository / ".git/objects" / candidate_docs[:2] / candidate_docs[2:]
+    loose_tree.chmod(0o600)
+    loose_tree.write_bytes(zlib.compress(f"tree {len(base_docs)}\0".encode() + base_docs))
+
+    with pytest.raises(VerifierFailure):
+        verify_committed_candidate_history(repository, base, MANIFEST_ID, head, now=NOW)
+
+
+@pytest.mark.parametrize("malformation", ["zero-padded-directory", "hidden-empty-tree"])
+def test_committed_history_rejects_noncanonical_or_empty_tree_topology(
+    tmp_path: Path, malformation: str
+) -> None:
+    repository, base = _repository(tmp_path)
+    normal_head = _candidate_commit(
+        repository, "src/analytics/daily_risk.py", b"VALUE = 1\n", "Allowed checkpoint"
+    )
+    normal_tree = _git(repository, "rev-parse", f"{normal_head}^{{tree}}")
+    tree_bytes = subprocess.run(
+        ["/usr/bin/git", "cat-file", "tree", normal_tree], cwd=repository,
+        check=True, stdout=subprocess.PIPE,
+    ).stdout
+    if malformation == "zero-padded-directory":
+        malformed_tree = tree_bytes.replace(b"40000 src\0", b"040000 src\0", 1)
+        assert malformed_tree != tree_bytes
+    else:
+        empty_tree = _hash_object(repository, "tree", b"")
+        malformed_tree = (
+            tree_bytes + b"40000 zz-forbidden-empty\0" + bytes.fromhex(empty_tree)
+        )
+    tree_oid = _hash_object(repository, "tree", malformed_tree)
+    candidate = _git(repository, "commit-tree", tree_oid, "-p", base, "-m", "Malformed tree")
+
+    with pytest.raises(ManifestDenied, match="CANDIDATE_DIFF_INVALID"):
+        verify_committed_candidate_history(repository, base, MANIFEST_ID, candidate, now=NOW)
