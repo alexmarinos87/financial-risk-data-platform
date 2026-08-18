@@ -2,8 +2,9 @@ PYTHON ?= .venv/bin/python
 PIP ?= $(PYTHON) -m pip
 
 LOCAL_POSTGRES_DSN ?= postgresql://risk_user:risk_password@localhost:5433/risk_platform
+REVIEW_BASE_REF ?= origin/main
 
-.PHONY: setup lint type-check test format benchmark-io docker-build k8s-render-dev k8s-render-prod k8s-check terraform-check infrastructure-check quality-check iteration-check clean-generated security-check readiness-check sandbox-once overnight-sandbox local-db-up local-db-down local-db-wait local-db-logs postgres-shell mongo-shell run-demo load-postgres-demo load-postgres-dry-run check-postgres-consistency consistency-demo
+.PHONY: setup lint type-check test format benchmark-io docker-build k8s-render-dev k8s-render-prod k8s-check terraform-check infrastructure-check quality-check iteration-check clean-generated security-check readiness-check sandbox-once overnight-sandbox morning-review local-db-up local-db-down local-db-wait local-db-logs postgres-shell mongo-shell run-demo load-postgres-demo load-postgres-dry-run check-postgres-consistency consistency-demo
 
 setup:
 	python3 -m venv .venv
@@ -62,6 +63,9 @@ sandbox-once:
 
 overnight-sandbox:
 	PYTHONUNBUFFERED=1 $(PYTHON) scripts/overnight_sandbox.py --hours 8 --sleep-seconds 1800
+
+morning-review:
+	PYTHONUNBUFFERED=1 $(PYTHON) scripts/morning_review.py --base-ref "$(REVIEW_BASE_REF)"
 
 local-db-up:
 	docker compose up -d postgres mongo
