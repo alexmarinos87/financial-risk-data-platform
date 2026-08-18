@@ -10,7 +10,8 @@ gate and review the diff before starting another item.
 
 ## Loop
 
-1. Pick one item from `docs/iteration-backlog.md`.
+1. Pick one item from `docs/iteration-backlog.md` and name its one primary arc42
+   building block from `docs/architecture.md`.
 2. Confirm the objective, acceptance criteria, scope, risk, and forbidden
    actions.
 3. Record the starting status and create a neutral branch if the change will be
@@ -76,6 +77,8 @@ Stop and ask for review before continuing when:
 4. The diff grows beyond one coherent change.
 5. The task would need `terraform apply`, a cloud deploy, or destructive data
    operations.
+6. The task has two primary arc42 blocks without one explicit end-to-end
+   contract and integration scenario.
 
 ## Morning Or End-Of-Run Review
 

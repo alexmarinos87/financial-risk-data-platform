@@ -42,6 +42,11 @@ Require explicit approval before:
 5. Running destructive database operations.
 6. Publishing or merging an unattended overnight change.
 
+Approval to prepare or publish a scheduled candidate must be encoded in the
+complete, unexpired manifest described by `docs/overnight-development.md`.
+Publication approval never includes readiness, acceptance, merge, deployment,
+workflow dispatch, or cloud credentials.
+
 ## Recommended GitHub Settings
 
 Configure branch protection or repository rules for `main`:
@@ -53,11 +58,20 @@ Configure branch protection or repository rules for `main`:
 5. Require conversation resolution before merge.
 6. Protect the `prod` GitHub Environment with required reviewers.
 
+Before any unattended branch publication, also require stale-review dismissal,
+approval after the last push, no administrator or bot bypass, CI concurrency,
+and a short-lived repository-scoped publisher credential. The writer and tests
+must never receive that credential. Until those controls are independently
+verified, scheduled publishing remains disabled.
+
 ## Overnight Sandbox
 
 Use `docs/overnight-sandbox.md` for unattended validation. The sandbox can run
 checks and write logs, but it must not push, merge, deploy, use cloud
 credentials, or create cloud resources.
+
+`docs/overnight-development.md` describes a separate candidate mode. It does
+not weaken the sandbox or activate publication by itself.
 
 ## Known Boundaries
 
