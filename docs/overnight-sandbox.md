@@ -96,6 +96,17 @@ Review:
 Then decide what should become a branch or pull request. Do not merge or deploy
 based only on overnight output.
 
+Generate a local acceptance package from the latest summary and current Git
+state:
+
+```bash
+make morning-review
+```
+
+The package highlights evidence and questions for review. It does not establish
+that the implementation is correct or grant approval to publish it. Use
+`docs/engineering-delivery-workflow.md` for the human acceptance gate.
+
 ## Security Protocols
 
 1. Keep cloud credentials out of the sandbox environment.

@@ -11,14 +11,27 @@ gate and review the diff before starting another item.
 ## Loop
 
 1. Pick one item from `docs/iteration-backlog.md`.
-2. Confirm the scope and forbidden actions.
-3. Create a neutral branch if the change will be published.
-4. Make the smallest change that satisfies the acceptance criteria.
-5. Run the validation gate.
-6. Review the diff for unrelated changes, generated files, secrets, and
-   overclaiming.
-7. Open a pull request only after validation passes.
-8. Merge only after checks pass and the diff is understood.
+2. Confirm the objective, acceptance criteria, scope, risk, and forbidden
+   actions.
+3. Record the starting status and create a neutral branch if the change will be
+   published.
+4. Give one writer a bounded implementation scope.
+5. Run independent read-only correctness and production-failure reviews for
+   agent-authored logic or other material changes.
+6. Triage findings, have the assigned writer make only accepted fixes, and
+   repeat any affected read-only review.
+7. Run the validation gate.
+8. Generate the local evidence package with `make morning-review`.
+9. Review the diff for behaviour, failure modes, unrelated changes, generated
+   files, secrets, and overclaiming.
+10. Open a pull request only after validation passes.
+11. Merge only after checks pass and the human engineer understands and accepts
+    the change.
+
+Use `docs/engineering-delivery-workflow.md` for the change-budget heuristic and
+human acceptance model, and `docs/agentic-workflows.md` for the review prompts.
+A docs-only or trivial change may combine the two read-only review roles, but
+the writer must not be the sole reviewer.
 
 ## Validation Gate
 
@@ -73,7 +86,8 @@ Before publishing:
 3. Confirm `.demo/`, `.sandbox/`, `data/`, `.terraform/`, and caches are not
    staged.
 4. Confirm `make iteration-check` passed or document exactly what was not run.
-5. Use neutral branch, commit, and pull request wording.
+5. Run `make morning-review` and inspect its risk-prioritised file list.
+6. Use neutral branch, commit, and pull request wording.
 
 ## Short Prompt Template
 
@@ -90,7 +104,12 @@ Use the selected backlog item.
 Validation:
 Run make iteration-check and git diff --check.
 
+Review:
+Use a separate read-only correctness review and production-failure challenge.
+Return accepted fixes to the writer and repeat affected evidence. Then run
+make morning-review.
+
 Do not:
 Deploy AWS, run terraform apply, change secrets, delete unrelated files, or
-start a second backlog item.
+start a second backlog item. Stop for human acceptance before merge or deploy.
 ```
