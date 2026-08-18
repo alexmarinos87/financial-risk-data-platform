@@ -18,6 +18,16 @@ from typing import Any, NoReturn
 
 MAX_MANIFEST_BYTES = 32 * 1024
 MAX_GIT_METADATA_BYTES = 4 * 1024
+MAX_CANDIDATE_BLOB_BYTES = 1024 * 1024
+MAX_CANDIDATE_TOTAL_BLOB_BYTES = 4 * 1024 * 1024
+MAX_COMMIT_OBJECT_BYTES = 64 * 1024
+MAX_TREE_OBJECT_BYTES = 1024 * 1024
+MAX_TOTAL_TREE_BYTES = 16 * 1024 * 1024
+MAX_TREE_OBJECTS = 4096
+MAX_EXPANDED_TREE_ENTRIES = 100_000
+MAX_EXPANDED_TREE_PATH_BYTES = 64 * 1024 * 1024
+MAX_TREE_PATH_BYTES = 4096
+MAX_TREE_DEPTH = 128
 GIT_TIMEOUT_SECONDS = 10.0
 MAX_AUTHORIZATION_WINDOW = timedelta(hours=24)
 UTC = timezone.utc
@@ -58,9 +68,12 @@ DENIAL_REASONS = frozenset({
     "PRIMARY_BLOCK_PATH_REQUIRED", "TEST_PATH_REQUIRED", "INVALID_VALIDATION_PROFILE",
     "AUTHORIZATION_INACTIVE", "RUNTIME_EXCEEDS_AUTHORIZATION", "INVALID_BASE_SHA",
     "BASE_NOT_CURRENT", "BASE_MOVED", "MANIFEST_BLOB_INVALID",
+    "INVALID_CANDIDATE_SHA", "CANDIDATE_HISTORY_INVALID", "CANDIDATE_DIFF_INVALID",
+    "CANDIDATE_BUDGET_EXCEEDED",
 })
 GIT_ENVIRONMENT = MappingProxyType({
     "GIT_ALLOW_PROTOCOL": "",
+    "GIT_ATTR_NOSYSTEM": "1",
     "GIT_CONFIG_GLOBAL": "/dev/null",
     "GIT_CONFIG_NOSYSTEM": "1",
     "GIT_CONFIG_SYSTEM": "/dev/null",
@@ -143,6 +156,48 @@ class ProtectedBaseManifest:
             "maximum_runtime_minutes": self.contract.maximum_runtime_minutes,
             "verified_at": self.verified_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "authorization_expires": self.contract.authorization_expires.strftime(
+                "%Y-%m-%dT%H:%M:%SZ"
+            ),
+        }
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class CommittedCandidateHistory:
+    manifest: ProtectedBaseManifest
+    candidate_commit_sha: str
+    candidate_tree_sha: str
+    commit_shas: tuple[str, ...]
+    touched_paths: tuple[str, ...]
+    final_paths: tuple[str, ...]
+    verified_at: datetime
+
+    def redacted_evidence(self) -> dict[str, Any]:
+        return {
+            "status": "candidate-history-scope-observed",
+            "publication_authorized": False,
+            "object_store_isolation_verified": False,
+            "worktree_cleanliness_verified": False,
+            "validation_verified": False,
+            "changed_line_budget_verified": False,
+            "content_fingerprint_verified": False,
+            "push_budget_verified": False,
+            "manifest_id": self.manifest.contract.manifest_id,
+            "manifest_sha256": self.manifest.manifest_sha256,
+            "record_key": self.manifest.record_key,
+            "base_commit_sha": self.manifest.base_commit_sha,
+            "base_tree_sha": self.manifest.base_tree_sha,
+            "candidate_commit_sha": self.candidate_commit_sha,
+            "candidate_tree_sha": self.candidate_tree_sha,
+            "commit_shas": list(self.commit_shas),
+            "commit_count": len(self.commit_shas),
+            "touched_paths": list(self.touched_paths),
+            "changed_file_count": len(self.touched_paths),
+            "final_paths": list(self.final_paths),
+            "maximum_changed_lines": self.manifest.contract.maximum_changed_lines,
+            "maximum_changed_files": self.manifest.contract.maximum_changed_files,
+            "maximum_commits": self.manifest.contract.maximum_commits,
+            "verified_at": self.verified_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "authorization_expires": self.manifest.contract.authorization_expires.strftime(
                 "%Y-%m-%dT%H:%M:%SZ"
             ),
         }
@@ -536,6 +591,310 @@ def verify_protected_base_manifest(
         record_key=hashlib.sha256(manifest_id.encode("ascii")).hexdigest(),
         object_format=object_format,
         verified_at=verified_at.astimezone(UTC),
+    )
+
+
+def _verified_object(
+    repository: Path, object_format: str, kind: str, oid: str, maximum_bytes: int
+) -> tuple[str, int, bytes]:
+    size_text = _ascii(
+        _run_git(repository, "cat-file", "-s", oid, maximum_output_bytes=16)
+    )
+    if len(size_text) > 10 or not size_text.isdigit():
+        raise VerifierFailure
+    size = int(size_text)
+    if size > maximum_bytes:
+        raise ManifestDenied("CANDIDATE_DIFF_INVALID")
+    content = _run_git(
+        repository,
+        "cat-file",
+        kind,
+        oid,
+        maximum_output_bytes=maximum_bytes,
+        excess_reason="CANDIDATE_DIFF_INVALID",
+    )
+    if len(content) != size or _git_object_oid(object_format, kind, content) != oid:
+        raise VerifierFailure
+    return hashlib.sha256(content).hexdigest(), size, content
+
+
+def _commit_tree_and_parents(content: bytes, sha_length: int) -> tuple[str, tuple[str, ...]]:
+    header, separator, _ = content.partition(b"\n\n")
+    headers = header.split(b"\n")
+    if not separator or not headers or not headers[0].startswith(b"tree "):
+        raise ManifestDenied("CANDIDATE_HISTORY_INVALID")
+    tree = headers[0].removeprefix(b"tree ")
+    parent_index = 1
+    parents: list[bytes] = []
+    while parent_index < len(headers) and headers[parent_index].startswith(b"parent "):
+        parents.append(headers[parent_index].removeprefix(b"parent "))
+        parent_index += 1
+    pattern = re.compile(f"[0-9a-f]{{{sha_length}}}".encode("ascii"))
+    if (
+        pattern.fullmatch(tree) is None
+        or tree == b"0" * sha_length
+        or any(line.startswith((b"tree ", b"parent ")) for line in headers[parent_index:])
+        or any(
+            pattern.fullmatch(parent) is None or parent == b"0" * sha_length
+            for parent in parents
+        )
+    ):
+        raise ManifestDenied("CANDIDATE_HISTORY_INVALID")
+    return tree.decode("ascii"), tuple(parent.decode("ascii") for parent in parents)
+
+
+def _tree_entries(content: bytes, oid_bytes: int) -> tuple[tuple[bytes, str, str], ...]:
+    if not content:
+        raise ManifestDenied("CANDIDATE_DIFF_INVALID")
+    offset = 0
+    names: set[bytes] = set()
+    previous_key: bytes | None = None
+    result: list[tuple[bytes, str, str]] = []
+    allowed_modes = {b"40000", b"100644", b"100755", b"120000", b"160000"}
+    while offset < len(content):
+        space = content.find(b" ", offset)
+        nul = content.find(b"\0", space + 1)
+        oid_end = nul + 1 + oid_bytes
+        if space <= offset or nul <= space + 1 or oid_end > len(content):
+            raise VerifierFailure
+        mode = content[offset:space]
+        name = content[space + 1:nul]
+        raw_oid = content[nul + 1:oid_end]
+        order_key = name + (b"/" if mode == b"40000" else b"\0")
+        if (
+            mode not in allowed_modes
+            or not name
+            or b"/" in name
+            or name in {b".", b".."}
+            or name.lower() == b".git"
+            or name in names
+            or raw_oid == b"\0" * oid_bytes
+            or (previous_key is not None and order_key <= previous_key)
+        ):
+            raise ManifestDenied("CANDIDATE_DIFF_INVALID")
+        names.add(name)
+        previous_key = order_key
+        result.append((name, mode.decode("ascii"), raw_oid.hex()))
+        offset = oid_end
+    return tuple(result)
+
+
+def _verified_tree_snapshots(
+    repository: Path, object_format: str, roots: tuple[str, ...]
+) -> dict[str, dict[bytes, tuple[str, str]]]:
+    oid_bytes = {"sha1": 20, "sha256": 32}.get(object_format)
+    if oid_bytes is None:
+        raise VerifierFailure
+    parsed: dict[str, tuple[tuple[bytes, str, str], ...]] = {}
+    total_bytes = 0
+    expanded_entries = 0
+    expanded_path_bytes = 0
+    snapshots: dict[str, dict[bytes, tuple[str, str]]] = {}
+
+    def entries_for(oid: str) -> tuple[tuple[bytes, str, str], ...]:
+        nonlocal total_bytes
+        if oid not in parsed:
+            if len(parsed) >= MAX_TREE_OBJECTS:
+                raise ManifestDenied("CANDIDATE_DIFF_INVALID")
+            _, size, content = _verified_object(
+                repository, object_format, "tree", oid, MAX_TREE_OBJECT_BYTES
+            )
+            total_bytes += size
+            if total_bytes > MAX_TOTAL_TREE_BYTES:
+                raise ManifestDenied("CANDIDATE_DIFF_INVALID")
+            parsed[oid] = _tree_entries(content, oid_bytes)
+        return parsed[oid]
+
+    for root in roots:
+        if root in snapshots:
+            continue
+        snapshot: dict[bytes, tuple[str, str]] = {}
+        pending: list[tuple[str, bytes, tuple[str, ...], int]] = [(root, b"", (), 0)]
+        while pending:
+            oid, prefix, ancestors, depth = pending.pop()
+            if oid in ancestors or depth > MAX_TREE_DEPTH:
+                raise ManifestDenied("CANDIDATE_DIFF_INVALID")
+            next_ancestors = (*ancestors, oid)
+            for name, mode, child_oid in reversed(entries_for(oid)):
+                full_path = prefix + name
+                expanded_entries += 1
+                expanded_path_bytes += len(full_path)
+                if (
+                    expanded_entries > MAX_EXPANDED_TREE_ENTRIES
+                    or expanded_path_bytes > MAX_EXPANDED_TREE_PATH_BYTES
+                    or len(full_path) > MAX_TREE_PATH_BYTES
+                ):
+                    raise ManifestDenied("CANDIDATE_DIFF_INVALID")
+                if mode == "40000":
+                    pending.append((child_oid, full_path + b"/", next_ancestors, depth + 1))
+                elif full_path in snapshot:
+                    raise ManifestDenied("CANDIDATE_DIFF_INVALID")
+                else:
+                    snapshot[full_path] = (mode, child_oid)
+        snapshots[root] = snapshot
+    return snapshots
+
+
+def _verified_commit_history(
+    repository: Path, binding: ProtectedBaseManifest, candidate_sha: str
+) -> tuple[tuple[str, ...], dict[str, str]]:
+    current = candidate_sha
+    reverse_commits: list[str] = []
+    trees: dict[str, str] = {}
+    while current != binding.base_commit_sha:
+        if len(reverse_commits) >= binding.contract.maximum_commits:
+            raise ManifestDenied("CANDIDATE_BUDGET_EXCEEDED")
+        _, _, content = _verified_object(
+            repository, binding.object_format, "commit", current, MAX_COMMIT_OBJECT_BYTES
+        )
+        tree, parents = _commit_tree_and_parents(content, len(binding.base_commit_sha))
+        if len(parents) != 1:
+            raise ManifestDenied("CANDIDATE_HISTORY_INVALID")
+        reverse_commits.append(current)
+        trees[current] = tree
+        current = parents[0]
+    if not reverse_commits:
+        raise ManifestDenied("CANDIDATE_HISTORY_INVALID")
+    _, _, base_content = _verified_object(
+        repository, binding.object_format, "commit", binding.base_commit_sha,
+        MAX_COMMIT_OBJECT_BYTES,
+    )
+    base_tree, _ = _commit_tree_and_parents(base_content, len(binding.base_commit_sha))
+    if base_tree != binding.base_tree_sha:
+        raise VerifierFailure
+    return tuple(reversed(reverse_commits)), trees
+
+
+def _is_lfs_pointer(content: bytes) -> bool:
+    if len(content) > 1024:
+        return False
+    lines = content.splitlines()
+    return (
+        len(lines) >= 3
+        and re.fullmatch(rb"version https://[^\s]+/spec/v1", lines[0]) is not None
+        and any(re.fullmatch(rb"oid sha256:[0-9a-f]{64}", line) for line in lines[1:])
+        and any(re.fullmatch(rb"size [0-9]+", line) for line in lines[1:])
+    )
+
+
+def _inspect_edge(
+    repository: Path,
+    old_snapshot: dict[bytes, tuple[str, str]],
+    new_snapshot: dict[bytes, tuple[str, str]],
+    binding: ProtectedBaseManifest,
+    blob_cache: dict[str, tuple[str, int]],
+) -> tuple[str, ...]:
+    allowed_paths = {path.encode("ascii"): path for path in binding.contract.allowed_paths}
+    changed_paths: list[str] = []
+    for raw_path in sorted(old_snapshot.keys() | new_snapshot.keys()):
+        old = old_snapshot.get(raw_path)
+        new = new_snapshot.get(raw_path)
+        if old == new:
+            continue
+        path = allowed_paths.get(raw_path)
+        if path is None or any(
+            endpoint is not None and endpoint[0] != "100644" for endpoint in (old, new)
+        ):
+            raise ManifestDenied("CANDIDATE_DIFF_INVALID")
+        changed_paths.append(path)
+        for endpoint in (old, new):
+            if endpoint is None or endpoint[1] in blob_cache:
+                continue
+            oid = endpoint[1]
+            digest, size, content = _verified_object(
+                repository, binding.object_format, "blob", oid, MAX_CANDIDATE_BLOB_BYTES
+            )
+            try:
+                content.decode("utf-8")
+            except UnicodeError:
+                raise ManifestDenied("CANDIDATE_DIFF_INVALID") from None
+            if b"\0" in content or _is_lfs_pointer(content):
+                raise ManifestDenied("CANDIDATE_DIFF_INVALID")
+            blob_cache[oid] = (digest, size)
+            if sum(item[1] for item in blob_cache.values()) > MAX_CANDIDATE_TOTAL_BLOB_BYTES:
+                raise ManifestDenied("CANDIDATE_DIFF_INVALID")
+    return tuple(changed_paths)
+
+
+def verify_committed_candidate_history(
+    repository: Path,
+    base_sha: str,
+    manifest_id: str,
+    candidate_sha: str,
+    *,
+    now: datetime | None = None,
+) -> CommittedCandidateHistory:
+    binding = verify_protected_base_manifest(repository, base_sha, manifest_id, now=now)
+    repository = Path(os.path.abspath(repository))
+    sha_length = len(binding.base_commit_sha)
+    if type(candidate_sha) is not str or re.fullmatch(
+        f"[0-9a-f]{{{sha_length}}}", candidate_sha
+    ) is None:
+        raise ManifestDenied("INVALID_CANDIDATE_SHA")
+    shallow = _ascii(_run_git(repository, "rev-parse", "--is-shallow-repository"))
+    if shallow != "false":
+        raise VerifierFailure
+    grafts_path = Path(_ascii(_run_git(
+        repository, "rev-parse", "--path-format=absolute", "--git-path", "info/grafts"
+    )))
+    if grafts_path.exists() or grafts_path.is_symlink():
+        raise VerifierFailure
+    commits, commit_trees = _verified_commit_history(repository, binding, candidate_sha)
+    candidate_tree = commit_trees[candidate_sha]
+    tree_roots = (binding.base_tree_sha, *(commit_trees[commit] for commit in commits))
+    snapshots = _verified_tree_snapshots(repository, binding.object_format, tree_roots)
+
+    touched_paths: set[str] = set()
+    blob_cache: dict[str, tuple[str, int]] = {}
+    previous_tree = binding.base_tree_sha
+    for commit in commits:
+        current_tree = commit_trees[commit]
+        changed_paths = _inspect_edge(
+            repository, snapshots[previous_tree], snapshots[current_tree], binding, blob_cache
+        )
+        if not changed_paths:
+            raise ManifestDenied("CANDIDATE_HISTORY_INVALID")
+        touched_paths.update(changed_paths)
+        if len(touched_paths) > binding.contract.maximum_changed_files:
+            raise ManifestDenied("CANDIDATE_BUDGET_EXCEEDED")
+        previous_tree = current_tree
+    final_paths = _inspect_edge(
+        repository,
+        snapshots[binding.base_tree_sha],
+        snapshots[candidate_tree],
+        binding,
+        blob_cache,
+    )
+    if not final_paths:
+        raise ManifestDenied("CANDIDATE_DIFF_INVALID")
+    closing_commits, closing_trees = _verified_commit_history(repository, binding, candidate_sha)
+    if closing_commits != commits or closing_trees != commit_trees:
+        raise VerifierFailure
+    closing_snapshots = _verified_tree_snapshots(
+        repository, binding.object_format, tree_roots
+    )
+    if closing_snapshots != snapshots:
+        raise VerifierFailure
+    try:
+        closing = verify_protected_base_manifest(repository, base_sha, manifest_id, now=now)
+    except ManifestDenied as error:
+        if error.reason == "BASE_NOT_CURRENT":
+            raise ManifestDenied("BASE_MOVED") from None
+        raise
+    if (
+        closing.base_tree_sha != binding.base_tree_sha
+        or closing.manifest_sha256 != binding.manifest_sha256
+        or closing.contract != binding.contract
+    ):
+        raise VerifierFailure
+    return CommittedCandidateHistory(
+        manifest=closing,
+        candidate_commit_sha=candidate_sha,
+        candidate_tree_sha=candidate_tree,
+        commit_shas=commits,
+        touched_paths=tuple(sorted(touched_paths)),
+        final_paths=final_paths,
+        verified_at=closing.verified_at,
     )
 
 
