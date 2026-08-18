@@ -78,6 +78,10 @@ and run the closest local validation that does not require those tools.
 12. Treat agent reviews and generated acceptance packages as evidence, not
     approval. The acceptance decision must remain pending until the engineer
     understands and explicitly accepts the final diff.
+13. Use `docs/architecture.md` to name one primary arc42 building block for each
+    change. Use `docs/overnight-development.md` only for an explicitly approved
+    scheduled candidate; its publishing mode stays disabled until every listed
+    repository and credential prerequisite is verified.
 
 ## Git Workflow
 
@@ -99,6 +103,11 @@ Unattended overnight work must be validation-first. It can run local checks and
 write logs under `.sandbox/`, but it must not push, merge, deploy, run
 `terraform apply`, or use cloud credentials unless the user explicitly approves
 that exact action.
+
+`make overnight-sandbox` is always validation-only. A separately approved
+scheduled candidate follows `docs/overnight-development.md`; absent its complete
+activation evidence and implemented isolation adapters, it must stop before
+creating a branch or modifying files.
 
 Use:
 

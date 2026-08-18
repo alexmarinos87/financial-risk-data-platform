@@ -3,6 +3,10 @@
 Use this runbook for a safe unattended validation loop. The sandbox is designed
 to gather evidence overnight, not to merge code or deploy infrastructure.
 
+This command remains validation-only even when a separate scheduled candidate
+is approved. See `docs/overnight-development.md` for that distinct, fail-closed
+mode; do not extend `scripts/overnight_sandbox.py` into a publisher.
+
 ## What It Does
 
 `make overnight-sandbox` runs repeated local validation cycles for up to eight

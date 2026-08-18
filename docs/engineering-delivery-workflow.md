@@ -160,10 +160,17 @@ For unattended local validation, use `docs/overnight-sandbox.md`. The sandbox
 runs readiness and security checks repeatedly, writes logs under `.sandbox/`,
 and does not push, merge, deploy, or create cloud resources.
 
-During an active controlled session, late-night agent work is best used for
-candidate code, focused tests, research, documentation, and independent review
-that can be inspected later. After the session ends, this repository's
-unattended mode remains validation-only; it does not continue modifying code.
+Scheduled candidate mode is currently disabled. Only after every activation
+gate in `docs/overnight-development.md` passes may an explicitly approved run
+prepare one arc42-bounded change. External publication is a separate capability
+and requires the same protected-branch, CI-concurrency, least-privilege
+credential, isolation, scope, and evidence gates. Even then it may open only a
+draft PR; human acceptance and merge remain outside the scheduled run.
+
+This scheduled-candidate runbook adds isolation, authorization, recurrence, and
+publication gates only. The controlled agent loop in this document remains the
+single source of truth for implementation, review, validation, and human
+acceptance.
 
 For continued improvement, use `docs/iteration-loop.md` and
 `docs/iteration-backlog.md`. The queue keeps work small enough to review.
