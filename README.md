@@ -103,7 +103,7 @@ Additional preparation notes:
 10. `docs/lambda-s3-orchestration.md` for AWS orchestration mapping
 11. `sql/postgres_schema.sql` and `sql/ops_queries.sql` for PostgreSQL warehouse and reporting examples
 12. `docs/agentic-workflows.md` for larger delegated development workflows
-13. `docs/engineering-delivery-workflow.md` for the engineer-owned delivery model
+13. `docs/engineering-delivery-workflow.md` for the controlled agent loop and human acceptance model
 14. `docs/agent-roles.md` for splitting repo work across bounded roles
 15. `docs/overnight-sandbox.md` for safe unattended validation runs
 16. `docs/security-protocols.md` for local and cloud safety controls
@@ -178,9 +178,12 @@ For a bounded improvement iteration:
 
 ```bash
 make iteration-check
+make morning-review
 ```
 
-See `docs/iteration-loop.md` and `docs/iteration-backlog.md`.
+The morning review is written under ignored `.sandbox/review-packages/` and is
+evidence for human inspection, not an approval. See `docs/iteration-loop.md`,
+`docs/iteration-backlog.md`, and `docs/engineering-delivery-workflow.md`.
 
 ## Deployment
 

@@ -52,6 +52,9 @@ Scope:
 Acceptance criteria:
 <What must be true in the repo?>
 
+Risk and failure behaviour:
+<State, side effects, recovery, permissions, and cost constraints>
+
 Validation:
 <Which commands must run?>
 
@@ -62,14 +65,50 @@ Do not:
 <Anything destructive, costly, or out of scope>
 ```
 
+## Controlled Agent Loop
+
+Optimise for the amount of code the lead engineer can safely accept, not the
+number of agent passes. Prefer one coherent change of roughly 200 to 500
+non-generated changed lines. This is a review heuristic rather than a quality
+target: split sooner when a change crosses contracts, schemas, IAM, deployment,
+or unrelated modules, and require an explicit reason for a larger diff.
+
+Use this sequence for agent-authored logic and other material changes:
+
+1. The delivery lead drafts the task brief and records the starting branch and
+   status. The human engineer confirms the brief before one writer receives a
+   bounded scope.
+2. The writer implements the smallest change that meets the acceptance criteria
+   and reports assumptions and checks actually run.
+3. A separate read-only reviewer checks correctness, maintainability,
+   observability, performance, security, testability, unnecessary complexity,
+   and missing tests.
+4. Another read-only pass assumes the tests pass and challenges production
+   failure modes: invalid inputs, partial failure, retries, idempotency,
+   concurrency, volume, permissions, dependencies, rollout, rollback,
+   monitoring, and cost.
+5. The delivery lead separates demonstrated defects from questions and optional
+   hardening, then assigns accepted fixes to the writer.
+6. The relevant automated gates run and the lead verifies their evidence.
+7. `make morning-review` creates an ignored local evidence package for the final
+   human review.
+
+Reviewers do not approve their own changes, and repeated agreement between
+agents is not an acceptance signal. The delivery lead triages and assembles
+evidence; the human engineer alone accepts the final diff, merges, or authorises
+deployment. Use the prompts in
+`docs/agentic-workflows.md` and the role boundaries in `docs/agent-roles.md`.
+Any fix invalidates review or validation evidence affected by that fix; repeat
+the relevant pass before acceptance.
+
 ## Validation Ladder
 
 Use the smallest validation set that matches the risk.
 
 | Change Type | Validation |
 | --- | --- |
-| Docs only | `git diff --check` |
-| Python logic | `make security-check && make lint && make test` |
+| Docs only | `make security-check && git diff --check` |
+| Python logic | `make security-check && make quality-check` |
 | Demo path | `make readiness-check` |
 | PostgreSQL loader | `make clean-generated && make run-demo && make load-postgres-dry-run` |
 | Local database walkthrough | `make local-db-up && make consistency-demo && make local-db-down` |
@@ -78,6 +117,28 @@ Use the smallest validation set that matches the risk.
 
 If Docker or Terraform is not installed locally, state that clearly and run the
 nearest available check.
+
+## Morning Acceptance Package
+
+After review and validation, run:
+
+```bash
+make morning-review
+```
+
+The command writes a Markdown report and machine-readable JSON evidence under
+ignored `.sandbox/review-packages/`. It records the current Git state,
+changed-file risk flags, the latest overnight summary when present, up to ten
+files to inspect first, and the human acceptance questions. Automated evidence
+is kept separate from reviewer assertions and the human decision remains
+pending. Use `make morning-review REVIEW_BASE_REF=main` when the local `main`
+branch, rather than the default `origin/main`, is the intended comparison base;
+the command never fetches.
+
+The command deliberately does not include a full diff, run validation, approve
+the change, commit, push, merge, or deploy. Overnight evidence is historical
+unless it can be tied to the reviewed Git state, so its timestamp and limits
+must be considered before relying on it.
 
 ## Monitoring Evidence
 
@@ -99,6 +160,11 @@ For unattended local validation, use `docs/overnight-sandbox.md`. The sandbox
 runs readiness and security checks repeatedly, writes logs under `.sandbox/`,
 and does not push, merge, deploy, or create cloud resources.
 
+During an active controlled session, late-night agent work is best used for
+candidate code, focused tests, research, documentation, and independent review
+that can be inspected later. After the session ends, this repository's
+unattended mode remains validation-only; it does not continue modifying code.
+
 For continued improvement, use `docs/iteration-loop.md` and
 `docs/iteration-backlog.md`. The queue keeps work small enough to review.
 
@@ -107,14 +173,17 @@ For continued improvement, use `docs/iteration-loop.md` and
 Before accepting a change, ask:
 
 1. Does the diff solve the stated objective?
-2. Are unrelated files untouched?
-3. Are generated outputs excluded?
-4. Are tests targeted at the risky behaviour?
-5. Did the validation commands actually run?
-6. Are unavailable checks disclosed?
-7. Are cloud resources still disabled by default?
-8. Are secrets absent?
-9. Is the explanation accurate without overstating production usage?
+2. Can I explain the important control and data paths?
+3. Do I understand state, side effects, idempotency, and failure recovery?
+4. Are unrelated files untouched and generated outputs excluded?
+5. Are permissions, secrets, and network exposure appropriate?
+6. Are operational, performance, and cost implications understood?
+7. Are tests targeted at the risky behaviour?
+8. Did the reported validation commands actually run for the state reviewed?
+9. Are unavailable or stale checks disclosed?
+10. Are cloud resources still disabled by default?
+11. Is the explanation accurate without overstating production usage?
+12. Can I defend the change without relying on an agent's approval?
 
 ## Short Talk Track
 

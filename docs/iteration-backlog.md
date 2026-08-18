@@ -219,3 +219,40 @@ Why it matters:
 
 It makes the repository look closer to a real team workflow and improves
 reviewability.
+
+## 8. Agent Change Acceptance Package
+
+Status: validated
+
+Scope:
+
+1. `scripts/morning_review.py`
+2. `tests/unit/test_morning_review.py`
+3. `Makefile`
+4. Engineering delivery, agent, iteration, and overnight workflow documentation
+
+Acceptance criteria:
+
+1. Document one bounded implementation, independent correctness review,
+   production challenge, automated gate, and human acceptance sequence.
+2. Generate an ignored local review package from Git state and the latest
+   overnight summary without running checks or changing tracked files.
+3. Highlight sensitive paths and rank up to ten files for human inspection.
+4. Keep automated evidence distinct from reviewer assertions and human
+   decisions.
+5. Cover missing Git base data and missing or malformed overnight evidence.
+
+Validation:
+
+```bash
+make security-check
+make quality-check
+make readiness-check
+make morning-review
+git diff --check
+```
+
+Why it matters:
+
+It turns high agent throughput into a reviewable engineering handoff while
+keeping acceptance, merge, and deployment decisions with the engineer.

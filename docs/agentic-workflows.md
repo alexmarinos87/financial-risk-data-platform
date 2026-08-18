@@ -11,9 +11,9 @@ Use the smallest autonomy level that fits the task.
 | Level | Use When | Agent Can Do | Human Must Do |
 | --- | --- | --- | --- |
 | 0: Advice | You are deciding direction | Explain options, risks, and next steps | Choose the path |
-| 1: Local Change | Scope is clear and low-risk | Edit files and run tests locally | Review final diff |
-| 2: Branch And PR | Work is multi-file but bounded | Branch, commit, push, open PR | Review PR before merge unless explicitly delegated |
-| 3: PR Follow-Through | PR has CI/review feedback | Inspect failures, patch, rerun checks | Approve risky changes |
+| 1: Local Change | Scope is clear and low-risk | Edit files and run tests locally | Review and accept the final diff |
+| 2: Branch And PR | Work is multi-file but bounded | Branch, commit, push, open PR | Accept the change before merge |
+| 3: PR Follow-Through | PR has CI/review feedback | Inspect failures, patch, rerun checks | Accept the final revision before merge |
 | 4: Cloud/Infra | AWS, Terraform, deploys, secrets | Prepare scaffolding and plans | Approve apply/deploy/secret changes |
 
 For this repo, default to Level 1 or 2. Use Level 4 only for disabled-by-default
@@ -49,7 +49,8 @@ Validation:
 Run <commands>.
 
 Git:
-Create a neutral branch, commit, push, open PR, wait for checks, merge if green.
+Create a neutral branch, commit, push, open a PR, wait for checks, and stop for
+human acceptance before merge.
 
 Do not:
 - <risky or out-of-scope action>
@@ -124,6 +125,37 @@ documentation. Prioritise findings by severity with file references. Do not
 make edits unless asked.
 ```
 
+### Independent Correctness Review
+
+```text
+Do not modify files. Review this change against its task brief. Prioritise
+correctness, maintainability, observability, performance, security,
+testability, unnecessary complexity, and missing tests. Cite files and explain
+the failure each finding could cause. Say explicitly when no finding is proven.
+```
+
+### Production Failure Challenge
+
+```text
+Do not modify files. Assume this passed its current tests. What can still fail
+in production? Challenge input boundaries, partial failure, retries,
+idempotency, concurrency, data volume, permissions, network dependencies,
+rollout, rollback, monitoring, and cost. Separate demonstrated defects from
+questions or optional hardening.
+```
+
+### Morning Package Synthesis
+
+```text
+Do not modify files. Use the local acceptance package, task brief, reviewer
+findings, and final diff to prepare a human review summary. Explain the change,
+architecture and important data/control paths, state and side effects,
+assumptions, failure and recovery behaviour, security and permissions,
+operational/performance/cost implications, test evidence, and unresolved
+questions. Rank no more than ten concrete file locations I should inspect.
+Separate recorded evidence from inference and leave the decision pending.
+```
+
 ### CI Fix
 
 ```text
@@ -161,54 +193,15 @@ For continued improvement work, use `docs/iteration-loop.md` and pick one item
 from `docs/iteration-backlog.md`. Keep each iteration to one coherent change
 set and stop after validation for review.
 
-## Review Checklist
+For the full implement, independent-review, production-challenge,
+automated-gate, and human-acceptance sequence, use
+`docs/engineering-delivery-workflow.md`. Run `make morning-review` after the
+checks to create an ignored local evidence package; the package supports human
+review and never approves a change.
 
-Before accepting agent-authored changes, check:
+## Acceptance Policy
 
-1. Does the change solve the stated problem?
-2. Are unrelated files untouched?
-3. Are generated files excluded?
-4. Do tests cover the risky behaviour?
-5. Did validation actually run?
-6. Are unavailable checks clearly disclosed?
-7. Are docs accurate and not overstated?
-8. Are cloud resources disabled by default?
-9. Are secrets absent?
-10. Is the diff small enough to review confidently?
-
-## What To Delegate
-
-Good candidates:
-
-1. Adding focused tests.
-2. Writing runbooks and walkthroughs.
-3. Implementing small loaders or adapters.
-4. Refactoring with stable behaviour.
-5. Creating disabled-by-default infrastructure scaffolds.
-6. Debugging CI failures.
-7. Drafting PR descriptions and validation summaries.
-
-Poor candidates without close review:
-
-1. IAM permissions.
-2. Secrets and credential handling.
-3. Production deploys.
-4. Destructive migrations.
-5. Broad rewrites before requirements are clear.
-6. Business-critical logic without tests.
-
-## Human Review Model
-
-Do not treat agent output as automatically correct. Treat it as a fast junior or
-mid-level implementation draft that still needs engineering ownership.
-
-For low-risk documentation or tests, review can be quick. For data loading,
-schema, infrastructure, auth, or deployment work, review the diff carefully,
-run checks, and reason through failure modes before merge.
-
-The practical target is not "no human checks code". The target is:
-
-```text
-humans spend less time typing boilerplate
-and more time reviewing design, risk, tests, and production impact
-```
+Use `docs/engineering-delivery-workflow.md` as the single source of truth for
+delegation boundaries, evidence freshness, risk review, and human acceptance.
+This guide supplies prompts and autonomy mechanics; it does not weaken or
+replace that policy.
