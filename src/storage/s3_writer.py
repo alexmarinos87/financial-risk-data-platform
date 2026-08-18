@@ -7,7 +7,20 @@ from typing import Any
 from ..common.exceptions import StorageError
 from .parquet_io import batch_file_name, create_parquet_file
 from .partitioning import partition_path
+from .raw_event_writer import write_raw_event_records
 from .storage_config import load_storage_config, validate_storage_config
+
+
+def _validate_dataset_segment(value: Any) -> str:
+    if (
+        not isinstance(value, str)
+        or value in {"", ".", ".."}
+        or "/" in value
+        or "\\" in value
+        or any(ord(character) < 32 for character in value)
+    ):
+        raise StorageError("Configured raw dataset must be one safe path segment")
+    return value
 
 
 def _resolve_dataset_name(
@@ -18,7 +31,7 @@ def _resolve_dataset_name(
 ) -> tuple[str, Path]:
     if kind == "raw":
         raw = storage["raw"]
-        dataset_name = raw["dataset"]
+        dataset_name = _validate_dataset_segment(raw["dataset"])
         if dataset is not None and dataset != dataset_name:
             raise StorageError(f"Raw dataset must be '{dataset_name}', got '{dataset}'")
         base_path = Path(raw["base_path"])
@@ -84,6 +97,15 @@ def write_records(
 
     dataset_name, base_path = _resolve_dataset_name(storage, kind=kind, dataset=dataset)
     dataset_path = base_path / dataset_name
+
+    if kind == "raw":
+        return write_raw_event_records(
+            records,
+            dataset_path=dataset_path,
+            raw_base_path=base_path,
+            storage_base_dir=Path(storage["base_dir"]),
+            file_format=file_format,
+        )
 
     partitioned_batches: dict[str | None, list[dict[str, Any]]] = {}
     for record in records:

@@ -44,8 +44,10 @@ Current behaviour:
 1. Records are validated before deduplication.
 2. The pipeline deduplicates by `event_id`.
 3. Duplicate count and duplicate rate are emitted as data quality metrics.
-4. Stable storage file names keep replayed writes from creating duplicate
-   parquet files.
+4. Under a local dataset lock, raw storage inventories the global `event_id`
+   keys before publication.
+5. A previously stored business fact is skipped even when the replay has a
+   later `ts_ingest`; the first accepted raw timestamp remains authoritative.
 
 Trade-off:
 
@@ -60,6 +62,42 @@ src/processing/deduplicator.py
 src/storage/s3_writer.py
 tests/integration/test_s3_writer.py
 tests/unit/test_data_quality.py
+```
+
+## Source Correction Under An Existing Event ID
+
+Scenario:
+
+A provider reuses an `event_id` but changes `source`, `symbol`, `price`,
+`volume`, or `ts_event`.
+
+Current behaviour:
+
+1. The raw writer validates the full incoming call and inventories existing raw
+   parquet while holding its dataset-wide local lock.
+2. It excludes only `ts_ingest` from business equality.
+3. A changed persisted field raises a sanitized `RawEventConflictError` before
+   any new row from that call is published.
+4. The first accepted parquet row is never overwritten and no automatic winner
+   or quarantine version is selected.
+5. If a process stops after atomic publication but before private staging-link
+   cleanup, the next raw write validates and removes that recognised staging
+   link under the dataset lock before inventorying the final file.
+
+Trade-off:
+
+This is a conservative first-seen policy. It prevents two active facts and
+forces an explicit correction decision, but it is not a versioned correction
+journal. The local lock waits for at most five seconds and inventory has bounded
+file, byte and row limits. Open/high/low-only provider changes are outside this
+check because the current raw event schema validates those Alpha Vantage values
+but retains only close as `price`.
+
+Evidence:
+
+```text
+src/storage/raw_event_writer.py
+tests/integration/test_s3_writer.py
 ```
 
 ## Schema Or Value Drift
@@ -158,8 +196,8 @@ Current behaviour:
 1. Resume state is written after each successful partition.
 2. A normal rerun skips already successful windows.
 3. A forced rerun can replay the window range again.
-4. Deterministic writes mean a forced rerun does not duplicate existing raw or
-   curated files.
+4. Raw `event_id` inventory and curated content hashes mean a forced rerun does
+   not duplicate existing facts or curated files.
 
 Trade-off:
 

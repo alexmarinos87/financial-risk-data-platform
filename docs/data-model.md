@@ -82,9 +82,34 @@ The project uses stable keys to make re-runs safe:
 | `risk_summary` | Re-loading the same `(symbol, ts_ingest)` updates the serving summary. |
 | `external_signal_summary` | Re-loading the same `(name, source, latest_signal_id)` updates that latest-signal row. |
 
-The parquet writer also uses a deterministic content hash for batch filenames.
-That prevents the same batch content from being written repeatedly to the same
-partition.
+Raw parquet uses `event_id` as the global logical key, matching processing and
+the warehouse. Before publication, the local writer inventories existing raw
+parquet under a dataset-wide lock. It compares `source`, `symbol`, `price`,
+`volume` and UTC `ts_event`, while treating `ts_ingest` as arrival metadata:
+
+1. The same fact with a later `ts_ingest` is a replay. It writes nothing and
+   preserves the first accepted timestamp and partition.
+2. Changed persisted business data under the same key is a correction conflict.
+   The whole write call stops before publishing any new rows.
+3. Existing duplicate keys or unreadable/incompatible raw files block further
+   publication until an operator repairs or migrates the local dataset.
+
+Inventory requires the seven named columns and compatible physical Parquet
+types: strings for IDs/source, double-precision price, integer volume, and
+DuckDB microsecond timestamp event/ingest columns. Microsecond-aligned legacy
+nanosecond columns are accepted because Python's existing input contract cannot
+carry finer precision; compatible timezone-naive timestamps are interpreted as
+UTC. Integer, decimal or single-precision physical price columns, coarse or
+submicrosecond timestamps, and string-encoded numeric or timestamp columns fail
+closed rather than being lossily coerced. UTF-8 field/call/dataset bounds are
+checked before publication and before inventory rows enter Python. Local safety
+caps also apply prospectively to the Parquet count, filesystem entries,
+physical bytes and rows that the next inventory can read. The dataset lock
+waits for at most five seconds.
+
+Curated parquet continues to use deterministic content hashes for batch
+filenames. All final parquet files are staged and published with atomic
+no-overwrite creation on the local filesystem.
 
 ## Curated Outputs
 
@@ -113,6 +138,18 @@ partition.
 5. `external_signal_summary` stores latest signal rows with `latest_signal_id`
    in the key. That is useful for retaining a small history of latest
    observations, but it is not a strict current-state table.
+6. Raw correction detection covers the persisted `MarketEvent` fields. A
+   provider-only change to open, high or low is not visible because the current
+   validated raw contract retains close as `price` and does not land the full
+   provider response.
+7. Raw inventory and locking are deliberately local and linear. A larger or
+   distributed implementation would use a table format, manifest or key index
+   with transactional coordination rather than scanning parquet under POSIX
+   `flock`.
+8. Raw first-seen identity is enforced for local parquet publication. The
+   PostgreSQL raw loader still has its existing `ON CONFLICT DO UPDATE`
+   contract; changing warehouse correction policy requires a separate
+   warehouse-owned change and migration decision.
 
 ## External Signal Summary
 
