@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import sys
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 from uuid import UUID
 
 import pytest
 
+from src.ingestion.alpha_vantage_client import alpha_vantage_daily_event_id
 from src.orchestration.backfill import _load_partition_records, run_backfill
 from src.orchestration.locks import acquire_partition_locks, release_partition_locks
 from src.storage.s3_writer import write_records
@@ -247,3 +248,54 @@ def test_backfill_partition_read_does_not_require_pytz(
     records = _load_partition_records(partition_dir)
     assert len(records) == 3
     assert records[0]["ts_event"].endswith("+00:00")
+
+
+def test_backfill_excludes_alpha_vantage_daily_events_from_minute_analytics(
+    tmp_path: Path,
+) -> None:
+    storage_config = build_storage_config(tmp_path, include_external_signal_summary=False)
+    storage_config_path = write_storage_config(
+        tmp_path,
+        include_external_signal_summary=False,
+    )
+    common = {
+        "symbol": "IBM",
+        "price": 101.5,
+        "volume": 1_200,
+        "ts_ingest": datetime(2025, 2, 2, 12, 30, tzinfo=timezone.utc),
+    }
+    events = [
+        {
+            **common,
+            "event_id": alpha_vantage_daily_event_id("IBM", date(2025, 1, 3)),
+            "ts_event": datetime(2025, 1, 3, tzinfo=timezone.utc),
+            "source": "alpha_vantage",
+        },
+        {
+            **common,
+            "event_id": "future-alpha-identity",
+            "ts_event": datetime(2025, 1, 4, tzinfo=timezone.utc),
+            "source": "alpha_vantage",
+        },
+        {
+            **common,
+            "event_id": "av-daily-legacy-marker",
+            "ts_event": datetime(2025, 1, 5, tzinfo=timezone.utc),
+            "source": "legacy-provider",
+        },
+    ]
+    assert write_records(events, kind="raw", storage_config=storage_config) == 3
+
+    result = run_backfill(
+        "2025-02-02T12:00:00Z",
+        "2025-02-02T12:00:00Z",
+        "hourly",
+        storage_config_path=storage_config_path,
+        thresholds_path=Path("config/risk_thresholds.yaml"),
+        resume=False,
+    )
+
+    assert len(result) == 1
+    assert result[0]["status"] == "skipped_no_records"
+    assert result[0]["records_replayed"] == 0
+    assert not (tmp_path / "curated").exists()

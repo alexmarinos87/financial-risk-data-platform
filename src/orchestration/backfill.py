@@ -11,6 +11,7 @@ from uuid import uuid4
 import duckdb
 
 from ..common.exceptions import OverlapError
+from ..ingestion.alpha_vantage_client import ALPHA_VANTAGE_DAILY_EVENT_PREFIX
 from ..storage.partitioning import partition_path
 from ..storage.storage_config import load_storage_config
 from .run_pipeline import run_pipeline
@@ -39,6 +40,12 @@ def _timestamp_from_epoch_microseconds(value: Any) -> datetime:
         return _UTC_EPOCH + timedelta(microseconds=value)
     except (OverflowError, TypeError, ValueError):
         raise ValueError("Raw backfill timestamp is outside the supported range") from None
+
+
+def _minute_analytics_eligible(record: dict[str, Any]) -> bool:
+    return record.get("source") != "alpha_vantage" and not str(
+        record.get("event_id", "")
+    ).startswith(ALPHA_VANTAGE_DAILY_EVENT_PREFIX)
 
 
 def _normalize_window(window: str) -> str:
@@ -86,7 +93,7 @@ def _load_partition_records(partition_dir: Path) -> list[dict[str, Any]]:
         )
         rows = cursor.fetchall()
         columns = [description[0] for description in cursor.description]
-    return [
+    records = [
         {
             column: _json_replay_value(
                 _timestamp_from_epoch_microseconds(value)
@@ -97,6 +104,7 @@ def _load_partition_records(partition_dir: Path) -> list[dict[str, Any]]:
         }
         for row in rows
     ]
+    return [record for record in records if _minute_analytics_eligible(record)]
 
 
 def _load_resume_state(path: Path) -> dict[str, Any]:
