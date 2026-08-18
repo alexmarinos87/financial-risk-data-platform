@@ -6,28 +6,26 @@ isolated worktree and create incremental green commits. A separately isolated
 publisher may push those commits to one new branch and open one draft pull
 request only after every activation prerequisite below is met.
 
-Publishing status: **disabled**
+Machine policy: `.github/overnight-publication-policy.json`
 
-Publishing authorization expires: **not set**
+Schema version 1 publication status: **disabled only**
 
-Publisher adapter path and SHA-256: **not configured**
+The machine policy, read as an exact Git blob from a recorded commit on
+protected `main`, is the activation source of truth. This prose and a saved
+scheduled prompt have no activation switch. The dependency-free security check
+rejects malformed, ambiguous, configured, or enabled schema-version-1 policy;
+it does not act as the future privileged activation verifier.
 
-Policy verifier path and SHA-256: **not configured**
+The current repository audit found no protection or ruleset on `main` and only
+a broad personal GitHub credential. CI now defines bounded triggers,
+concurrency, read-only permissions, and immutable action revisions, but those
+repository-file controls do not create an approved unattended publisher.
 
-Candidate isolation adapter path and SHA-256: **not configured**
-
-The current repository audit found no protection or ruleset on `main`, no CI
-concurrency policy, and only a broad personal GitHub credential. This document
-does not turn those conditions into an approved unattended publisher.
-
-These activation fields, read from a recorded commit on protected `main`, are the
-activation source of truth. A saved scheduled prompt has no activation switch.
-Enabling publication requires a human-reviewed PR that supplies an unexpired
-authorization, records protected-base paths and approved SHA-256 digests for
-implemented publisher, policy-verifier, and candidate-isolation adapters, checks
-every prerequisite below, and changes `Publishing status` to `enabled`. The
-scheduled task must continue reading the fields from the pinned base on every
-run.
+Enabling publication requires a later human-reviewed policy schema and trusted
+verifier that supply an unexpired authorization and approved identities for
+implemented publisher, policy-verifier, and candidate-isolation adapters. Every
+prerequisite below must also be independently verified. The scheduled task must
+continue reading and hashing the policy from the pinned base on every run.
 
 ## Outcome And Authority
 
@@ -93,8 +91,9 @@ verified:
       stale approvals, require approval after the last push, and require
       conversation resolution.
 - [ ] Block force pushes, branch deletion, administrator bypass, and bot bypass.
-- [ ] Add CI concurrency keyed by pull request or branch so a new checkpoint
-      cancels superseded validation for the same candidate.
+- [ ] Independently verify the repository CI concurrency keyed by pull request
+      or branch so a new checkpoint cancels superseded validation for the same
+      candidate. This is not the overnight writer lease.
 - [ ] Use a dedicated short-lived GitHub App installation token with only
       metadata read, contents read/write, pull-request write, and checks read.
 - [ ] Deny the publisher workflow, Actions-write, deployment, environment,
@@ -199,9 +198,10 @@ Each run must:
 2. Require a clean tracked and untracked state.
 3. In a trusted orchestration step, fetch `origin`, resolve `origin/main`, and
    record its commit SHA. Do not execute candidate code in this step.
-4. Read `AGENTS.md`, activation policy, architecture, security policy, and the
-   selected manifest from that exact commit with `git show <base-sha>:<path>`.
-   Hash the selected manifest and reject local, uncommitted, or stale copies.
+4. Read `AGENTS.md`, `.github/overnight-publication-policy.json`, architecture,
+   security policy, and the selected manifest from that exact commit with
+   `git show <base-sha>:<path>`. Hash the machine policy and selected manifest;
+   reject local, uncommitted, or stale copies.
 5. Confirm no matching local/remote branch, terminal run record, or PR exists.
 6. Verify the protected-base policy names implemented policy-verifier,
    candidate-isolation, and publisher adapter paths plus approved SHA-256
@@ -458,9 +458,10 @@ orchestration step, fetch origin and record the origin/main SHA. Read AGENTS.md,
 docs/architecture.md, docs/overnight-development.md,
 docs/security-protocols.md, docs/engineering-delivery-workflow.md,
 docs/agent-roles.md, and docs/iteration-backlog.md from that exact commit with
-git show. Resolve the selected manifest link, read its entire Git blob from the
-same commit, and hash the exact bytes. Never select from local or uncommitted
-copies.
+git show. Also read `.github/overnight-publication-policy.json` from that exact
+commit and hash its complete Git blob. Resolve the selected manifest link, read
+its entire Git blob from the same commit, and hash the exact bytes. Never select
+from local or uncommitted copies.
 
 Select exactly one unexpired backlog item whose status is exactly
 "approved for overnight development" and whose manifest is complete. If none
@@ -478,12 +479,12 @@ security-check, git diff --check, and at least the arc42 minimum validation for
 the primary block.
 Stage only allowed paths. Never create a broken or WIP commit.
 
-Read `Publishing status`, its expiry, the paths and SHA-256 identities of the
-publisher, policy verifier, and candidate isolation adapter, and the activation
-checklist from the recorded protected-base runbook. With the current
-disabled/not-configured values, report a successful no-op before creating a
-branch, editing, committing, pushing, or opening a PR. Do not simulate an
-isolation or publication adapter in prompt logic.
+Strictly validate the recorded protected-base machine policy. Schema version 1
+authorizes only a disabled state with no expiry, configured adapters, or
+scheduled mutation capabilities. Report a successful no-op before creating a
+branch, editing, committing, pushing, or opening a PR. Do not infer authority
+from this runbook or simulate an isolation or publication adapter in prompt
+logic.
 
 If a future protected-base version enables publication, still publish only when
 every activation prerequisite, credential boundary, task manifest, shared

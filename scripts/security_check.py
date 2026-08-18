@@ -5,6 +5,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from overnight_publication_policy import validate_repository_controls
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -208,6 +210,7 @@ def main() -> int:
     check_kubernetes_defaults(failures)
     check_kubernetes_config_copies(failures)
     check_terraform_flags(failures)
+    failures.extend(validate_repository_controls(ROOT))
 
     if failures:
         print("Security check failed:")
@@ -224,6 +227,7 @@ def main() -> int:
     print("- base Kubernetes defaults avoid token mounting and deny egress")
     print("- Kubernetes deploy config copies match repo config")
     print("- optional managed database creation flags default to false")
+    print("- CI contract is valid and overnight publication policy is disabled")
     return 0
 
 
