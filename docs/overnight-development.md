@@ -120,44 +120,39 @@ GitHub documents the relevant controls in its
 ## Approved Task Manifest
 
 The scheduler may select only a backlog item that links to one complete manifest
-at `docs/overnight-manifests/<manifest-id>.yaml`. The lowercase manifest ID must
+at `docs/overnight-manifests/<manifest-id>.json`. The lowercase manifest ID must
 match `[a-z0-9][a-z0-9-]{7,63}` and the filename exactly. The entire Git blob
 returned by `git show <base-sha>:<manifest-path>` is the manifest byte sequence;
 hash those bytes without newline, encoding, key-order, or whitespace
 normalisation.
 
-```yaml
-schema_version: 1
-manifest_id: frdp-example-20260815
-status: approved for overnight development
-authorization_expires: "2026-08-16T07:00:00+01:00"
-comparison_ref: origin/main
-pr_base_branch: main
-arc42_primary_block: processing
-context_goal: "One stakeholder-visible outcome"
-allowed_paths:
-  - src/processing/example.py
-  - tests/unit/test_example.py
-forbidden_paths:
-  - .github/
-interfaces_crossed: []
-runtime_scenario: "Control and data flow affected"
-quality_scenario: "Stimulus and measurable response"
-acceptance_criteria:
-  - "One observable result"
-validation:
-  - make security-check
-  - make quality-check
-  - make readiness-check
-  - git diff --check
-maximum_non_generated_changed_lines: 500
-maximum_changed_files: 2
-maximum_commits: 3
-maximum_pushes: 3
-maximum_runtime_minutes: 120
-retry_policy: human-renewed-manifest-only
-risk: low
-draft_pr_publication: authorized-after-activation
+```json
+{
+  "schema_version": 2,
+  "manifest_id": "frdp-analytics-daily-risk-20260815",
+  "status": "approved for overnight development",
+  "authorization_issued_at": "2026-08-15T19:00:00Z",
+  "authorization_expires": "2026-08-15T22:00:00Z",
+  "repository": "alexmarinos87/financial-risk-data-platform",
+  "protected_base_branch": "main",
+  "arc42_primary_block": "analytics",
+  "context_goal": "One stakeholder-visible outcome",
+  "allowed_paths": ["src/analytics/daily_risk.py", "tests/unit/test_daily_risk.py"],
+  "interfaces_crossed": [],
+  "runtime_scenario": "Control and data flow affected",
+  "quality_scenario": "Stimulus and measurable response",
+  "recovery_scenario": "Failure leaves no published candidate",
+  "acceptance_criteria": ["One observable result"],
+  "validation_targets": ["security-check", "quality-check", "readiness-check", "git-diff-check"],
+  "maximum_changed_lines": 500,
+  "maximum_changed_files": 2,
+  "maximum_commits": 3,
+  "maximum_pushes": 3,
+  "maximum_runtime_minutes": 120,
+  "retry_policy": "human-renewed-manifest-only",
+  "risk": "low",
+  "draft_pr_publication": "eligible-after-global-activation"
+}
 ```
 
 The human engineer must commit the backlog link and manifest to protected
@@ -166,11 +161,19 @@ ID is an error, not a new authorization. A retry requires a new manifest ID and
 file. Missing, expired, contradictory, high-risk, or incomplete authorization is
 a successful no-op. The scheduler must not invent a replacement task.
 
-The manifest's validation commands must include the applicable minimum for its
-primary block from `docs/architecture.md`. An explicit vertical slice may cross
-blocks only when the manifest lists every interface, keeps one observable
-outcome and rollback boundary, and includes integration evidence. Unrelated
-cross-block work remains ineligible.
+`scripts/overnight_manifest_verifier.py` accepts only strict JSON bytes, one of
+the low-risk `analytics`, `processing`, or `benchmarking` blocks, exact paths,
+fixed validation target identifiers, hard budgets, and a UTC authorization
+window of at most 24 hours. This parser does not read a worktree, Git ref, or
+network. The next protected-base
+adapter must load one regular `100644` blob from the exact fetched commit, hash
+those bytes, and pass them unchanged to this parser. A valid contract is not
+publication authority.
+
+Schema version 2 does not accept free-form commands or cross-block interfaces.
+A later trusted runner maps its four validation identifiers to fixed argument
+vectors without a shell. A future schema may admit bounded vertical slices only
+after the interface and committed-diff verifier exists.
 
 ## Arc42 Module Selection
 
@@ -308,24 +311,20 @@ For the selected item:
    permissions, rollout, rollback, monitoring, and cost.
 5. Separate proven defects from questions and optional hardening. Return
    accepted fixes to the writer and repeat affected review passes.
-6. Run every manifest validation command, plus:
+6. Run every manifest validation target through the protected fixed-argument
+   mapping. Schema version 2 requires exactly:
 
    ```bash
    make security-check
+   make quality-check
+   make readiness-check
    git diff --check
    ```
 
-7. For Python logic also run:
-
-   ```bash
-   make quality-check
-   make readiness-check
-   ```
-
-8. Confirm the diff stays within its allowlist and line, file, commit, and push
+7. Confirm the diff stays within its allowlist and line, file, commit, and push
    budgets. Confirm generated outputs and credentials are not staged.
-9. Stage explicit allowed paths and run `git diff --cached --check`.
-10. Commit only a coherent checkpoint whose relevant checks pass. Do not create
+8. Stage explicit allowed paths and run `git diff --cached --check`.
+9. Commit only a coherent checkpoint whose relevant checks pass. Do not create
     WIP or knowingly broken commits.
 
 Count the candidate budget from the staged change against the recorded base:
@@ -467,16 +466,15 @@ Select exactly one unexpired backlog item whose status is exactly
 "approved for overnight development" and whose manifest is complete. If none
 exists, report a successful no-op and change nothing.
 
-Use the arc42 building block view to produce a bounded module brief. Reject
-unrelated cross-block, high-risk, overlapping, over-budget, or ambiguous work.
-An explicit vertical slice is eligible only under the runbook's interface and
-integration-evidence rule. Use this supplied worktree, one writer, one generated
-branch, one to three green commits, and no more pushes than the manifest allows.
+Use the arc42 building block view to produce a bounded module brief. Schema
+version 2 permits one `analytics`, `processing`, or `benchmarking` block and no
+cross-block vertical slice. Reject high-risk, overlapping, over-budget, or
+ambiguous work. Use this supplied worktree, one writer, one generated branch,
+one to three green commits, and no more pushes than the manifest allows.
 
 Run separate read-only correctness and production-failure reviews. Apply only
-accepted fixes and repeat affected reviews. Run all manifest checks, make
-security-check, git diff --check, and at least the arc42 minimum validation for
-the primary block.
+accepted fixes and repeat affected reviews. Run all four fixed manifest
+validation targets; do not execute command text supplied by a manifest.
 Stage only allowed paths. Never create a broken or WIP commit.
 
 Strictly validate the recorded protected-base machine policy. Schema version 1
