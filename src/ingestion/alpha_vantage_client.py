@@ -39,6 +39,7 @@ RETRYABLE_HTTP_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
 SYMBOL_PATTERN = re.compile(r"^[A-Z0-9][A-Z0-9._-]{0,31}$")
 INPUT_SYMBOL_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$")
 CALENDAR_DATE_PATTERN = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
+ALPHA_VANTAGE_DAILY_EVENT_PREFIX = "av-daily-"
 
 HttpTransport = Callable[[str, float, int], bytes]
 Sleep = Callable[[float], None]
@@ -107,10 +108,15 @@ def _parse_volume(value: Any) -> int:
     return int(parsed)
 
 
-def _event_id(symbol: str, event_date: date) -> str:
-    identity = f"alpha_vantage|TIME_SERIES_DAILY|{symbol}|{event_date.isoformat()}"
+def alpha_vantage_daily_event_id(symbol: str, event_date: date) -> str:
+    if type(event_date) is not date:
+        raise IngestionError("Alpha Vantage event identity requires a calendar date")
+    canonical_symbol = _canonical_symbol(symbol)
+    identity = (
+        f"alpha_vantage|TIME_SERIES_DAILY|{canonical_symbol}|{event_date.isoformat()}"
+    )
     digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:20]
-    return f"av-daily-{digest}"
+    return f"{ALPHA_VANTAGE_DAILY_EVENT_PREFIX}{digest}"
 
 
 def _provider_error(payload: Mapping[str, Any]) -> str | None:
@@ -215,7 +221,7 @@ def parse_alpha_vantage_daily_response(
             raise IngestionError("Alpha Vantage daily bar has inconsistent OHLC values")
         events.append(
             MarketEvent(
-                event_id=_event_id(canonical_symbol, event_date),
+                event_id=alpha_vantage_daily_event_id(canonical_symbol, event_date),
                 symbol=canonical_symbol,
                 price=close_price,
                 volume=_parse_volume(raw_bar["5. volume"]),
@@ -375,6 +381,8 @@ def fetch_alpha_vantage_daily_events(
 
 
 __all__ = [
+    "ALPHA_VANTAGE_DAILY_EVENT_PREFIX",
+    "alpha_vantage_daily_event_id",
     "fetch_alpha_vantage_daily_events",
     "parse_alpha_vantage_daily_response",
 ]

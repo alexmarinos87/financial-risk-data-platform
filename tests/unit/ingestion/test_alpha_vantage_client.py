@@ -12,6 +12,7 @@ import pytest
 import src.ingestion.alpha_vantage_client as alpha_vantage_client
 from src.common.exceptions import IngestionError
 from src.ingestion.alpha_vantage_client import (
+    alpha_vantage_daily_event_id,
     fetch_alpha_vantage_daily_events,
     parse_alpha_vantage_daily_response,
 )
@@ -137,7 +138,20 @@ def test_event_id_tracks_logical_bar_not_mutable_values() -> None:
     )
 
     assert original[0].event_id == corrected[0].event_id
+    assert original[0].event_id == "av-daily-696a6d4963466a26937a"
     assert original[0].price != corrected[0].price
+
+
+def test_daily_event_identity_is_pinned_to_canonical_symbol_and_calendar_date() -> None:
+    expected = "av-daily-696a6d4963466a26937a"
+
+    assert alpha_vantage_daily_event_id("IBM", date(2025, 1, 3)) == expected
+    assert alpha_vantage_daily_event_id("ibm", date(2025, 1, 3)) == expected
+    with pytest.raises(IngestionError, match="requires a calendar date"):
+        alpha_vantage_daily_event_id(
+            "IBM",
+            datetime(2025, 1, 3, tzinfo=timezone.utc),  # type: ignore[arg-type]
+        )
 
 
 def test_parse_daily_response_limits_most_recent_rows_then_orders_them() -> None:
