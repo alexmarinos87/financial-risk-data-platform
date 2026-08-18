@@ -7,7 +7,7 @@ from typing import Any
 from ..common.exceptions import StorageError
 from .parquet_io import batch_file_name, create_parquet_file
 from .partitioning import partition_path
-from .raw_event_writer import write_raw_event_records
+from .raw_event_writer import validate_raw_event_destination, write_raw_event_records
 from .storage_config import load_storage_config, validate_storage_config
 
 
@@ -66,6 +66,22 @@ def _parse_ingest_timestamp(value: Any) -> datetime | None:
     if ts.tzinfo is None:
         ts = ts.replace(tzinfo=timezone.utc)
     return ts
+
+
+def validate_raw_storage_destination(storage_config: dict[str, Any]) -> str:
+    """Validate the configured raw path without creating files or directories."""
+
+    validate_storage_config(storage_config)
+    storage = storage_config["storage"]
+    file_format = storage["format"].lower()
+    dataset_name, base_path = _resolve_dataset_name(storage, kind="raw", dataset=None)
+    validate_raw_event_destination(
+        dataset_path=base_path / dataset_name,
+        raw_base_path=base_path,
+        storage_base_dir=Path(storage["base_dir"]),
+        file_format=file_format,
+    )
+    return dataset_name
 
 
 def write_records(
