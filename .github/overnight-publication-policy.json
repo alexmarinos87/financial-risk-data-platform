@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "publication_status": "disabled",
+  "authorization_expires": null,
+  "protected_base": {"repository": "alexmarinos87/financial-risk-data-platform", "branch": "main"},
+  "required_status_checks": [
+    "Security guardrails",
+    "Python readiness",
+    "Infrastructure validation"
+  ],
+  "adapters": {
+    "candidate_isolation": {"path": null, "sha256": null},
+    "policy_verifier": {"path": null, "sha256": null},
+    "publisher": {"path": null, "sha256": null}
+  },
+  "scheduled_run_capabilities": {
+    "create_local_branch": false, "edit_worktree": false,
+    "create_commit": false, "create_remote_branch": false,
+    "update_remote_branch": false, "open_draft_pull_request": false
+  }
+}

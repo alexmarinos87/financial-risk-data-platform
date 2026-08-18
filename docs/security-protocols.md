@@ -8,7 +8,10 @@ Cloud deployment remains manual and approval-driven.
 1. `make security-check` scans for obvious committed secrets, generated output,
    unsafe deploy triggers, missing ownership rules, unsafe local database port
    bindings, risky Kubernetes defaults, and managed database creation flags.
-2. CI separates security guardrails, Python readiness, and infrastructure
+2. CI runs for pull requests and pushes to `main`, cancels superseded
+   runs for the same pull request or branch, keeps repository permissions
+   read-only, and pins its external actions to reviewed commit SHAs. It
+   separates security guardrails, Python readiness, and infrastructure
    validation into distinct jobs. Python readiness includes linting, type
    checking, tests, demo execution, and warehouse dry-run loading.
 3. `.gitignore` and `.dockerignore` exclude local environments, generated data,
@@ -73,9 +76,19 @@ credentials, or create cloud resources.
 `docs/overnight-development.md` describes a separate candidate mode. It does
 not weaken the sandbox or activate publication by itself.
 
+`.github/overnight-publication-policy.json` is the machine-readable publication
+policy. Schema version 1 is deliberately disabled-only: `make security-check`
+rejects attempted activation, configured adapters, mutation capabilities,
+ambiguous JSON, and CI contract regressions. That candidate-tree check is not a
+trusted activation verifier. A future scheduler must load and verify approved
+policy and verifier bytes from the pinned protected-base commit before any
+branch creation or worktree mutation.
+
 ## Known Boundaries
 
 The current local security check is intentionally lightweight. It is useful for
 this repo, but it is not a substitute for organization-wide secret scanning,
 SAST, dependency scanning, image scanning, cloud policy checks, or production
-security review.
+security review. Immutable-action enforcement in this iteration covers
+`.github/workflows/ci.yml`; the privileged manual deployment workflow remains a
+separate deployment-control review.
