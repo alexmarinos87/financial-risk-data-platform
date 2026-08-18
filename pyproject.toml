@@ -3,7 +3,7 @@ name = "financial-risk-data-platform"
 version = "0.1.0"
 description = "Production-style financial risk data platform scaffold"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 
 dependencies = [
   "pydantic>=2.7",
@@ -29,7 +29,7 @@ line-length = 100
 select = ["E4", "E7", "E9", "F"]
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.11"
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

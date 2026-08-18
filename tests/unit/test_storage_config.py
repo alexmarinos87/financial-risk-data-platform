@@ -11,6 +11,11 @@ def test_storage_config_valid():
     storage = config["storage"]
     assert storage["raw"]["dataset"]
     assert "risk_summary" in storage["curated"]["datasets"]
+    assert {
+        "daily_returns",
+        "daily_volatility",
+        "daily_risk_summary",
+    }.issubset(storage["curated"]["datasets"])
     assert storage["partitioning"]["granularity"]
 
 
