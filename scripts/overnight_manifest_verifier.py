@@ -162,11 +162,40 @@ class ProtectedBaseManifest:
 
 
 @dataclass(frozen=True, slots=True, repr=False)
+class VerifiedFileContent:
+    mode: str
+    git_oid: str
+    sha256: str
+    content: bytes
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class CommittedPathChange:
+    path: str
+    old: VerifiedFileContent | None
+    new: VerifiedFileContent | None
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class CommittedHistoryEdge:
+    parent_commit_sha: str
+    parent_tree_sha: str
+    commit_sha: str
+    commit_tree_sha: str
+    changes: tuple[CommittedPathChange, ...]
+
+
+@dataclass(frozen=True, slots=True, repr=False)
 class CommittedCandidateHistory:
     manifest: ProtectedBaseManifest
     candidate_commit_sha: str
     candidate_tree_sha: str
     commit_shas: tuple[str, ...]
+    base_commit_sha256: str
+    commit_object_sha256s: tuple[str, ...]
+    tree_object_sha256s: tuple[tuple[str, str], ...]
+    edges: tuple[CommittedHistoryEdge, ...]
+    final_changes: tuple[CommittedPathChange, ...]
     touched_paths: tuple[str, ...]
     final_paths: tuple[str, ...]
     verified_at: datetime
@@ -681,11 +710,12 @@ def _tree_entries(content: bytes, oid_bytes: int) -> tuple[tuple[bytes, str, str
 
 def _verified_tree_snapshots(
     repository: Path, object_format: str, roots: tuple[str, ...]
-) -> dict[str, dict[bytes, tuple[str, str]]]:
+) -> tuple[dict[str, dict[bytes, tuple[str, str]]], tuple[tuple[str, str], ...]]:
     oid_bytes = {"sha1": 20, "sha256": 32}.get(object_format)
     if oid_bytes is None:
         raise VerifierFailure
     parsed: dict[str, tuple[tuple[bytes, str, str], ...]] = {}
+    digests: dict[str, str] = {}
     total_bytes = 0
     expanded_entries = 0
     expanded_path_bytes = 0
@@ -696,13 +726,14 @@ def _verified_tree_snapshots(
         if oid not in parsed:
             if len(parsed) >= MAX_TREE_OBJECTS:
                 raise ManifestDenied("CANDIDATE_DIFF_INVALID")
-            _, size, content = _verified_object(
+            digest, size, content = _verified_object(
                 repository, object_format, "tree", oid, MAX_TREE_OBJECT_BYTES
             )
             total_bytes += size
             if total_bytes > MAX_TOTAL_TREE_BYTES:
                 raise ManifestDenied("CANDIDATE_DIFF_INVALID")
             parsed[oid] = _tree_entries(content, oid_bytes)
+            digests[oid] = digest
         return parsed[oid]
 
     for root in roots:
@@ -732,19 +763,20 @@ def _verified_tree_snapshots(
                 else:
                     snapshot[full_path] = (mode, child_oid)
         snapshots[root] = snapshot
-    return snapshots
+    return snapshots, tuple(sorted(digests.items()))
 
 
 def _verified_commit_history(
     repository: Path, binding: ProtectedBaseManifest, candidate_sha: str
-) -> tuple[tuple[str, ...], dict[str, str]]:
+) -> tuple[tuple[str, ...], dict[str, str], dict[str, str]]:
     current = candidate_sha
     reverse_commits: list[str] = []
     trees: dict[str, str] = {}
+    digests: dict[str, str] = {}
     while current != binding.base_commit_sha:
         if len(reverse_commits) >= binding.contract.maximum_commits:
             raise ManifestDenied("CANDIDATE_BUDGET_EXCEEDED")
-        _, _, content = _verified_object(
+        digest, _, content = _verified_object(
             repository, binding.object_format, "commit", current, MAX_COMMIT_OBJECT_BYTES
         )
         tree, parents = _commit_tree_and_parents(content, len(binding.base_commit_sha))
@@ -752,17 +784,19 @@ def _verified_commit_history(
             raise ManifestDenied("CANDIDATE_HISTORY_INVALID")
         reverse_commits.append(current)
         trees[current] = tree
+        digests[current] = digest
         current = parents[0]
     if not reverse_commits:
         raise ManifestDenied("CANDIDATE_HISTORY_INVALID")
-    _, _, base_content = _verified_object(
+    base_digest, _, base_content = _verified_object(
         repository, binding.object_format, "commit", binding.base_commit_sha,
         MAX_COMMIT_OBJECT_BYTES,
     )
     base_tree, _ = _commit_tree_and_parents(base_content, len(binding.base_commit_sha))
     if base_tree != binding.base_tree_sha:
         raise VerifierFailure
-    return tuple(reversed(reverse_commits)), trees
+    digests[binding.base_commit_sha] = base_digest
+    return tuple(reversed(reverse_commits)), trees, digests
 
 
 def _is_lfs_pointer(content: bytes) -> bool:
@@ -782,10 +816,10 @@ def _inspect_edge(
     old_snapshot: dict[bytes, tuple[str, str]],
     new_snapshot: dict[bytes, tuple[str, str]],
     binding: ProtectedBaseManifest,
-    blob_cache: dict[str, tuple[str, int]],
-) -> tuple[str, ...]:
+    blob_cache: dict[str, VerifiedFileContent],
+) -> tuple[CommittedPathChange, ...]:
     allowed_paths = {path.encode("ascii"): path for path in binding.contract.allowed_paths}
-    changed_paths: list[str] = []
+    changes: list[CommittedPathChange] = []
     for raw_path in sorted(old_snapshot.keys() | new_snapshot.keys()):
         old = old_snapshot.get(raw_path)
         new = new_snapshot.get(raw_path)
@@ -796,7 +830,6 @@ def _inspect_edge(
             endpoint is not None and endpoint[0] != "100644" for endpoint in (old, new)
         ):
             raise ManifestDenied("CANDIDATE_DIFF_INVALID")
-        changed_paths.append(path)
         for endpoint in (old, new):
             if endpoint is None or endpoint[1] in blob_cache:
                 continue
@@ -810,10 +843,15 @@ def _inspect_edge(
                 raise ManifestDenied("CANDIDATE_DIFF_INVALID") from None
             if b"\0" in content or _is_lfs_pointer(content):
                 raise ManifestDenied("CANDIDATE_DIFF_INVALID")
-            blob_cache[oid] = (digest, size)
-            if sum(item[1] for item in blob_cache.values()) > MAX_CANDIDATE_TOTAL_BLOB_BYTES:
+            blob_cache[oid] = VerifiedFileContent(endpoint[0], oid, digest, content)
+            if sum(len(item.content) for item in blob_cache.values()) > MAX_CANDIDATE_TOTAL_BLOB_BYTES:
                 raise ManifestDenied("CANDIDATE_DIFF_INVALID")
-    return tuple(changed_paths)
+        changes.append(CommittedPathChange(
+            path,
+            None if old is None else blob_cache[old[1]],
+            None if new is None else blob_cache[new[1]],
+        ))
+    return tuple(changes)
 
 
 def verify_committed_candidate_history(
@@ -839,41 +877,57 @@ def verify_committed_candidate_history(
     )))
     if grafts_path.exists() or grafts_path.is_symlink():
         raise VerifierFailure
-    commits, commit_trees = _verified_commit_history(repository, binding, candidate_sha)
+    commits, commit_trees, commit_digests = _verified_commit_history(
+        repository, binding, candidate_sha
+    )
     candidate_tree = commit_trees[candidate_sha]
     tree_roots = (binding.base_tree_sha, *(commit_trees[commit] for commit in commits))
-    snapshots = _verified_tree_snapshots(repository, binding.object_format, tree_roots)
+    snapshots, tree_digests = _verified_tree_snapshots(
+        repository, binding.object_format, tree_roots
+    )
 
     touched_paths: set[str] = set()
-    blob_cache: dict[str, tuple[str, int]] = {}
+    blob_cache: dict[str, VerifiedFileContent] = {}
+    edges: list[CommittedHistoryEdge] = []
+    previous_commit = binding.base_commit_sha
     previous_tree = binding.base_tree_sha
     for commit in commits:
         current_tree = commit_trees[commit]
-        changed_paths = _inspect_edge(
+        changes = _inspect_edge(
             repository, snapshots[previous_tree], snapshots[current_tree], binding, blob_cache
         )
-        if not changed_paths:
+        if not changes:
             raise ManifestDenied("CANDIDATE_HISTORY_INVALID")
-        touched_paths.update(changed_paths)
+        edges.append(CommittedHistoryEdge(
+            previous_commit, previous_tree, commit, current_tree, changes
+        ))
+        touched_paths.update(change.path for change in changes)
         if len(touched_paths) > binding.contract.maximum_changed_files:
             raise ManifestDenied("CANDIDATE_BUDGET_EXCEEDED")
+        previous_commit = commit
         previous_tree = current_tree
-    final_paths = _inspect_edge(
+    final_changes = _inspect_edge(
         repository,
         snapshots[binding.base_tree_sha],
         snapshots[candidate_tree],
         binding,
         blob_cache,
     )
-    if not final_paths:
+    if not final_changes:
         raise ManifestDenied("CANDIDATE_DIFF_INVALID")
-    closing_commits, closing_trees = _verified_commit_history(repository, binding, candidate_sha)
-    if closing_commits != commits or closing_trees != commit_trees:
+    closing_commits, closing_trees, closing_commit_digests = _verified_commit_history(
+        repository, binding, candidate_sha
+    )
+    if (
+        closing_commits != commits
+        or closing_trees != commit_trees
+        or closing_commit_digests != commit_digests
+    ):
         raise VerifierFailure
-    closing_snapshots = _verified_tree_snapshots(
+    closing_snapshots, closing_tree_digests = _verified_tree_snapshots(
         repository, binding.object_format, tree_roots
     )
-    if closing_snapshots != snapshots:
+    if closing_snapshots != snapshots or closing_tree_digests != tree_digests:
         raise VerifierFailure
     try:
         closing = verify_protected_base_manifest(repository, base_sha, manifest_id, now=now)
@@ -892,8 +946,13 @@ def verify_committed_candidate_history(
         candidate_commit_sha=candidate_sha,
         candidate_tree_sha=candidate_tree,
         commit_shas=commits,
+        base_commit_sha256=commit_digests[binding.base_commit_sha],
+        commit_object_sha256s=tuple(commit_digests[commit] for commit in commits),
+        tree_object_sha256s=tree_digests,
+        edges=tuple(edges),
+        final_changes=final_changes,
         touched_paths=tuple(sorted(touched_paths)),
-        final_paths=final_paths,
+        final_paths=tuple(change.path for change in final_changes),
         verified_at=closing.verified_at,
     )
 

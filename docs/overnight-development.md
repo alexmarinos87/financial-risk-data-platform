@@ -353,24 +353,38 @@ git diff --cached --numstat -z <base-sha>
 ```
 
 Parse the NUL-delimited records and sum additions and deletions. Use numstat only
-for paths, binary markers, and lines; the committed tree-snapshot gate rejects
-symlinks and gitlinks. This is a pre-commit line-budget check until the separate
-committed-line adapter exists.
+as an advisory pre-commit estimate; Git attributes and diff heuristics are not
+part of the authoritative committed calculation. The committed tree-snapshot
+gate rejects symlinks and gitlinks.
 
-After each commit, call `verify_committed_candidate_history` with the exact base,
-Manifest ID, and full candidate SHA. It derives the linear parent chain from
-independently rehashed commit bytes and compares every edge using in-memory,
-raw-byte path maps from independently rehashed canonical tree objects. Empty or
-malformed tree topology, unlisted paths, non-regular/non-text blobs, and file or
-commit budget overflow fail closed without logging file content. The observer
-caps each blob at 1 MiB, the unique changed-blob set at 4 MiB, and recursively
-expanded tree graphs by object, byte, entry, depth, and path limits. Its evidence
-explicitly
-leaves line budget, content fingerprint, worktree cleanliness, validation, push
-count, object-store isolation, and publication authority unverified. The trusted
-controller must establish common-object-store isolation before relying on this
-observation in a later gate; this observer does not establish that isolation. A
-candidate cannot proceed merely because this scope gate passes.
+After each commit, call `verify_committed_candidate_content` with the exact base,
+Manifest ID, and full candidate SHA. It first runs the committed-history observer,
+which derives the linear parent chain from independently rehashed commit bytes
+and compares every edge using bounded, in-memory path maps from independently
+rehashed canonical tree objects. Empty or malformed tree topology, unlisted
+paths, non-regular/non-text blobs, and file or commit budget overflow fail closed
+without logging file content.
+
+The content adapter then uses only those captured bytes. Algorithm
+`frdp-lf-minimal-insdel-v1` counts the shortest insertion/deletion line distance
+on every parent-to-commit edge; byte LF is the only separator, a replacement
+costs one deletion plus one addition, and repeated or reverted edits count again.
+It never adds the final base-to-tip summary a second time. Equality with the
+manifest budget passes. Lines longer than 64 KiB, more than 100,000 records in
+one blob or 200,000 across the changed-blob set, and bounded-edit work above its
+fixed operation or compared-byte caps fail closed.
+
+The adapter also emits a SHA-256 fingerprint for the versioned,
+length-framed `frdp.overnight.candidate-content.v1` transcript. It binds the
+manifest hash, object format, exact commit and tree observations, every ordered
+edge/path/endpoint, derived line counts, final summary, and a deduplicated table
+of exact changed-blob bytes. It excludes the runtime verification timestamp and
+worktree state; the manifest hash still binds its human-issued authorization
+times. Evidence marks the
+changed-line budget and fingerprint verified, but leaves worktree
+cleanliness, validation, push count, object-store isolation, and publication
+authority false. The trusted controller must establish common-object-store
+isolation before relying on the observation in a later gate.
 
 A checkpoint is not green until validation is repeated against the exact commit
 tree that would be pushed:
