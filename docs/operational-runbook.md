@@ -167,6 +167,52 @@ If all tables are stale, inspect orchestration and source landing. If only one
 curated table is stale, inspect that transformation and its load specification
 in `src/warehouse/postgres_loader.py`.
 
+## Alpha Vantage Daily Raw Ingest
+
+The live-provider path is a local, single-symbol source-to-raw command. Confirm
+the environment credential is present without printing it, then select only
+completed daily bars:
+
+```bash
+test -n "$ALPHA_VANTAGE_API_KEY"
+END_DATE="$(.venv/bin/python -c 'from datetime import datetime, timedelta, timezone; print((datetime.now(timezone.utc).date() - timedelta(days=1)).isoformat())')"
+.venv/bin/python -m src.orchestration.ingest_alpha_vantage_daily \
+  --source alpha_vantage \
+  --symbol IBM \
+  --end-date "$END_DATE" \
+  --max-records 31
+```
+
+The required end date must be earlier than the run's UTC date. Missing or
+invalid credentials, invalid storage configuration, provider quota/service
+responses, an empty filtered selection, and raw correction conflicts all exit
+nonzero without a sample-data fallback or success JSON object on stdout.
+
+Interpret the outcomes as follows:
+
+1. `records_written` equal to `records_selected` is a first landing.
+2. `records_written: 0` with all records already present is a safe replay; the
+   first accepted ingest timestamp and partition remain unchanged.
+3. A correction conflict means the provider changed a persisted fact under a
+   stable event ID. The first version remains and the complete new batch is
+   rejected for operator review.
+4. The command prints one credential-free JSON evidence object only after the
+   raw call succeeds. Automation must require exit status zero and parse that
+   same stdout object; this slice does not publish a persistent summary file.
+   If the writer reports an indeterminate outcome, or stdout delivery itself
+   fails after the raw call, the raw data may already have been committed.
+   Rerun is safe because the raw identity contract reconciles already-present
+   facts.
+
+The command retains normalized close, volume, identifiers, and timestamps—not
+the complete provider response or OHLC history. The backfill reader excludes
+Alpha Vantage daily identities before minute-labelled returns, volatility, and
+lateness calculations. Concurrent
+local invocations remain storage-correct under the raw lock but can consume two
+provider requests before that lock is acquired. The provider client also has a
+bounded retry budget and socket/read guard, while synchronous DNS is not a hard
+wall-clock deadline.
+
 ## Backfill Or Replay
 
 Use backfill when a raw partition needs deterministic replay after a source
