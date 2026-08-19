@@ -3,7 +3,7 @@
 ## Outcome
 
 This path turns the implemented Alpha Vantage daily adapter into a complete,
-local source-to-curated feature:
+local source-to-serving feature:
 
 ```text
 TIME_SERIES_DAILY response
@@ -13,6 +13,7 @@ TIME_SERIES_DAILY response
   -> annualised rolling volatility
   -> historical VaR loss and maximum drawdown
   -> versioned curated Parquet
+  -> PostgreSQL history and current-serving views
 ```
 
 It is intentionally separate from `src.orchestration.run_pipeline`. Daily close
@@ -51,13 +52,13 @@ credential, and the analytical command reads only local raw Parquet.
 
 | Dataset | One row means | Logical identity |
 | --- | --- | --- |
-| `daily_returns` | One close-to-close return for a source, symbol and event date. | Model version, calculation ID and current source event ID. |
-| `daily_volatility` | One annualised sample-volatility observation for a source, symbol, event date and configured return window. | Model version, calculation ID, source event ID and window. |
-| `daily_risk_summary` | One daily close risk snapshot containing return, optional volatility, historical VaR loss and maximum drawdown. | Model version, calculation ID and current source event ID. |
+| `daily_returns` | One close-to-close return for a source, symbol and event date. | `calculation_id`, derived from model version and the two immutable source event IDs. |
+| `daily_volatility` | One annualised sample-volatility observation for a source, symbol, event date and configured return window. | `calculation_id`, derived from model version, window parameters and immutable source event IDs. |
+| `daily_risk_summary` | One daily close risk snapshot containing return, optional volatility, historical VaR loss and maximum drawdown. | `calculation_id`, derived from model version, full parameter set and ordered immutable source history. |
 
 Each calculation ID hashes the model version, parameters and ordered immutable
 source event IDs. The same history and parameters therefore produce the same
-record bytes and content-addressed Parquet filename.
+record bytes, Parquet filename and PostgreSQL conflict key.
 
 ## Formula Semantics
 
@@ -73,11 +74,18 @@ record bytes and content-addressed Parquet filename.
   through that event date.
 - `history_status` is `partial` until both configured windows have enough return
   observations; partial rows remain visible rather than being silently dropped.
+- `volatility_window`, `annualization_days`, `var_window` and `var_confidence`
+  are explicit columns, so consumers never have to infer model settings from an
+  opaque calculation hash.
+
+The explicit summary-parameter schema is versioned as `daily-risk-v2`. The
+warehouse can retain earlier v1 rows with unknown new fields as null, while v2
+rows must populate them.
 
 These are transparent portfolio calculations, not a claim of a validated bank
 capital model.
 
-## Replay And Late History
+## Replay, Late History And Current Versions
 
 Curated publication is record-addressed through the existing local Parquet
 writer:
@@ -86,13 +94,66 @@ writer:
    records.
 2. Adding a previously missing historical date changes downstream calculation
    fingerprints and publishes new analytical versions.
-3. Existing analytical files are not overwritten or automatically retired.
-4. A larger implementation would use a transactional table format and an
-   explicit current-version view.
+3. Existing analytical files and warehouse rows are not overwritten by a new
+   calculation ID.
+4. Loading the same calculation ID again is idempotent through the warehouse
+   conflict key.
 
-A partial multi-record publication can leave a valid prefix if the process
-stops. Rerunning is safe: already-published record files are skipped and the
-remaining records converge.
+PostgreSQL retains every version in the three daily tables. The view
+`risk_platform.latest_daily_risk_summary` uses the following parameterised grain:
+
+```text
+source
+symbol
+ts_event
+model_version
+volatility_window
+var_window
+var_confidence
+annualization_days
+```
+
+Within that grain it selects the greatest `ts_ingest`, then the greatest
+`calculation_id` as a deterministic tie-break. Parameter changes remain visible
+as separate serving rows rather than competing with one another.
+
+The source-aware view `risk_platform.daily_risk_semantic_model` enriches the
+current daily version through `current_symbol_dimension` on both `symbol` and
+`source`. That avoids the ambiguous symbol-only join retained in the original
+minute-oriented demonstration.
+
+## Warehouse Workflow
+
+Inspect planned row counts without connecting to PostgreSQL:
+
+```bash
+make daily-risk-warehouse-dry-run
+```
+
+Load the local Parquet outputs into the Docker PostgreSQL warehouse:
+
+```bash
+make local-db-up
+make daily-risk-warehouse-load
+```
+
+The load target reapplies the idempotent schema before loading, so an already
+running local database receives the new tables and views. Then run focused
+reconciliation:
+
+```bash
+make check-daily-risk-consistency
+```
+
+`sql/daily_risk_consistency_checks.sql` verifies:
+
+- daily rows reference their immutable raw source events;
+- volatility rows have a matching daily return date;
+- calculation IDs are unique within each dataset;
+- the current-version view has one row per parameterised grain;
+- the view does not select a stale version;
+- `ready` history has the declared window evidence; and
+- the source-aware semantic view does not multiply or lose current rows.
 
 ## Safety Bounds
 
@@ -109,7 +170,7 @@ CI and readiness tests never make a live provider request.
 
 ## Current Boundary
 
-This slice writes local curated Parquet only. It does not add daily PostgreSQL
-tables, a scheduler, cloud persistence, dashboards or alert delivery. Those are
-separate product and schema decisions after the local source-to-curated contract
-is accepted.
+This slice remains local: Parquet and Docker PostgreSQL. It does not add a
+scheduler, cloud persistence, dashboards, alert delivery or a deployment. Those
+remain separate product and operating decisions after the source-to-serving
+contract is accepted.

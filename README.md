@@ -14,7 +14,7 @@ grains and interview-ready engineering evidence.
 2. Validates schemas, normalises symbols and deduplicates events.
 3. Retains immutable, partitioned raw Parquet for replay.
 4. Builds minute-oriented demo analytics and daily market-risk analytics.
-5. Stores curated Parquet and demonstrates PostgreSQL serving and reconciliation.
+5. Stores curated Parquet and serves versioned outputs through PostgreSQL views.
 
 ## Quickstart
 
@@ -106,6 +106,7 @@ Alpha Vantage TIME_SERIES_DAILY
   -> annualised rolling volatility
   -> historical VaR loss and maximum drawdown
   -> versioned curated Parquet
+  -> PostgreSQL version history and current-serving views
 ```
 
 Curated datasets are written under `data/curated/daily_returns`,
@@ -115,10 +116,30 @@ historical observation produces a new calculation fingerprint rather than
 silently replacing earlier analytical evidence. The command writes a
 credential-free summary to `.demo/daily-risk-summary.json`.
 
+Inspect the warehouse batch before connecting to PostgreSQL:
+
+```bash
+make daily-risk-warehouse-dry-run
+```
+
+Load all available local outputs and run the focused daily reconciliation checks:
+
+```bash
+make local-db-up
+make daily-risk-warehouse-load
+make check-daily-risk-consistency
+```
+
+The warehouse retains every `calculation_id` and exposes
+`risk_platform.latest_daily_risk_summary` for one current row per source,
+symbol, event date, model version and parameter set. The source-aware
+`risk_platform.daily_risk_semantic_model` joins reference data on both `symbol`
+and `source`.
+
 No live provider request runs in CI or `make readiness-check`; tests inject or
 land deterministic Alpha Vantage-shaped events. See
-`docs/daily-risk-pipeline.md` for grains, formulas, replay behaviour and current
-boundaries.
+`docs/daily-risk-pipeline.md` for grains, formulas, replay behaviour and serving
+contracts.
 
 ## Data Sources
 
@@ -137,7 +158,7 @@ Additional preparation and operating notes:
 
 0. `AGENTS.md` for durable project instructions used by coding agents
 1. `docs/demo-script.md` for a short technical walkthrough
-2. `docs/daily-risk-pipeline.md` for the real daily source-to-curated path
+2. `docs/daily-risk-pipeline.md` for the real daily source-to-serving path
 3. `docs/preparation-plan.md` for interview preparation
 4. `docs/interview-stories.md` for interview story rehearsal
 5. `docs/mock-interview.md` for timed interview practice
@@ -172,16 +193,16 @@ make local-db-down
 
 See `docs/postgres-mongodb-walkthrough.md` and
 `docs/data-consistency-walkthrough.md` for the full inspection and reconciliation
-flow. The PostgreSQL seed includes:
+flow. The PostgreSQL serving layer now includes both:
 
 ```text
 symbol_dimension_history -> current_symbol_dimension -> finance_risk_semantic_model
+                                                  \-> daily_risk_semantic_model
 ```
 
-This demonstrates SCD Type 2 history, current-dimension serving and a
-dashboard-ready view over the original minute-oriented risk outputs. The daily
-curated datasets are local Parquet contracts in the current slice; adding daily
-warehouse tables is a separate schema decision.
+The original semantic view demonstrates SCD Type 2 enrichment for the
+minute-oriented demo. The daily view preserves model versions and performs a
+source-aware dimension join.
 
 ## Performance Benchmark
 
