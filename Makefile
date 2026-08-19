@@ -1,15 +1,22 @@
 PYTHON ?= .venv/bin/python
 PIP ?= $(PYTHON) -m pip
+LOCK_FILE ?= requirements.lock
 
 LOCAL_POSTGRES_DSN ?= postgresql://risk_user:risk_password@localhost:5433/risk_platform
 REVIEW_BASE_REF ?= origin/main
+SYMBOL ?= IBM
+START_DATE ?=
+END_DATE ?=
+MAX_RECORDS ?= 100
+VOL_WINDOW ?= 20
+VAR_WINDOW ?= 60
+VAR_CONFIDENCE ?= 0.95
 
-.PHONY: setup lint type-check test format benchmark-io docker-build k8s-render-dev k8s-render-prod k8s-check terraform-check infrastructure-check quality-check iteration-check clean-generated security-check readiness-check sandbox-once overnight-sandbox morning-review local-db-up local-db-down local-db-wait local-db-logs postgres-shell mongo-shell run-demo load-postgres-demo load-postgres-dry-run check-postgres-consistency consistency-demo
+.PHONY: setup lint type-check test dependency-check format benchmark-io docker-build k8s-render-dev k8s-render-prod k8s-check terraform-check infrastructure-check quality-check iteration-check clean-generated security-check readiness-check sandbox-once overnight-sandbox morning-review daily-risk-demo local-db-up local-db-down local-db-wait local-db-logs postgres-shell mongo-shell run-demo load-postgres-demo load-postgres-dry-run check-postgres-consistency consistency-demo
 
 setup:
 	python3 -m venv .venv
-	$(PIP) install --upgrade pip
-	$(PIP) install -e '.[dev]'
+	PIP_CONSTRAINT=$(LOCK_FILE) $(PIP) install -e '.[dev]'
 
 lint:
 	$(PYTHON) -m ruff check .
@@ -22,6 +29,9 @@ format:
 
 test:
 	$(PYTHON) -m pytest -q
+
+dependency-check:
+	$(PYTHON) -m pip check
 
 benchmark-io:
 	$(PYTHON) -m src.benchmarks.io_engine_benchmark --summary-json .benchmarks/io_engine/summary.json
@@ -46,7 +56,7 @@ terraform-check:
 
 infrastructure-check: k8s-check terraform-check
 
-quality-check: lint type-check test
+quality-check: lint type-check test dependency-check
 
 iteration-check: security-check infrastructure-check quality-check clean-generated run-demo load-postgres-dry-run
 
@@ -66,6 +76,32 @@ overnight-sandbox:
 
 morning-review:
 	PYTHONUNBUFFERED=1 $(PYTHON) scripts/morning_review.py --base-ref "$(REVIEW_BASE_REF)"
+
+daily-risk-demo:
+	@set -eu; \
+	if [ -z "$${ALPHA_VANTAGE_API_KEY:-}" ]; then \
+		echo "ALPHA_VANTAGE_API_KEY must be set without printing its value" >&2; \
+		exit 2; \
+	fi; \
+	end_date="$(END_DATE)"; \
+	if [ -z "$$end_date" ]; then \
+		end_date="$$($(PYTHON) -c 'from datetime import datetime, timedelta, timezone; print((datetime.now(timezone.utc).date() - timedelta(days=1)).isoformat())')"; \
+	fi; \
+	start_args=""; \
+	if [ -n "$(START_DATE)" ]; then start_args="--start-date $(START_DATE)"; fi; \
+	$(PYTHON) -m src.orchestration.ingest_alpha_vantage_daily \
+		--source alpha_vantage \
+		--symbol "$(SYMBOL)" \
+		--end-date "$$end_date" \
+		--max-records "$(MAX_RECORDS)"; \
+	$(PYTHON) -m src.orchestration.run_daily_risk \
+		--symbol "$(SYMBOL)" \
+		$$start_args \
+		--end-date "$$end_date" \
+		--vol-window "$(VOL_WINDOW)" \
+		--var-window "$(VAR_WINDOW)" \
+		--var-confidence "$(VAR_CONFIDENCE)" \
+		--summary-json .demo/daily-risk-summary.json
 
 local-db-up:
 	docker compose up -d postgres mongo

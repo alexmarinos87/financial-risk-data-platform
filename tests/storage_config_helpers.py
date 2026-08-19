@@ -11,6 +11,9 @@ CURATED_DATASETS = {
     "data_quality_metrics": "data_quality_metrics",
     "risk_summary": "risk_summary",
     "external_signal_summary": "external_signal_summary",
+    "daily_returns": "daily_returns",
+    "daily_volatility": "daily_volatility",
+    "daily_risk_summary": "daily_risk_summary",
 }
 
 
