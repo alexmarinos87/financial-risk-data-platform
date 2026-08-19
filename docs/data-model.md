@@ -53,6 +53,9 @@ states exactly what one row means.
 | `data_quality_metrics` | One quality summary for a pipeline run timestamp. | `UNIQUE (ts_ingest)` | The table has a surrogate `metric_id`, but idempotent loading uses `ts_ingest`. A production version would usually carry an explicit `pipeline_run_id`. |
 | `risk_summary` | One risk status row per symbol and metric timestamp. | `(symbol, ts_ingest)` | This is a serving summary. It intentionally denormalises latest volatility, VaR, quality status and external signal context. |
 | `external_signal_summary` | One latest signal observation per signal name/source/latest signal ID included in the run. | `(name, source, latest_signal_id)` | This preserves each distinct latest signal ID. If the product requirement were "one current row per signal", the key should be `(name, source)`. |
+| `daily_returns` | One versioned close-to-close return for a source, symbol and event date. | `calculation_id` | The ID binds model version and the two immutable source event IDs. Multiple analytical versions for the same business date can coexist. |
+| `daily_volatility` | One versioned annualised volatility observation for a source, symbol, event date and configured window. | `calculation_id` | Window and annualisation parameters are stored explicitly as queryable columns. |
+| `daily_risk_summary` | One versioned daily close risk snapshot for a source, symbol, event date and full model parameter set. | `calculation_id` | The base table preserves every calculation. `latest_daily_risk_summary` selects one current row per parameterised grain. |
 | `symbol_dimension_history` | One version of symbol reference attributes for a symbol/source over an effective time interval. | `(symbol, source, effective_from)` plus one-current-row index | This is the repository's SCD Type 2 example. It preserves attribute history such as sector changes. |
 
 ## Source, Raw, Curated, Serving
@@ -81,6 +84,9 @@ The project uses stable keys to make re-runs safe:
 | `data_quality_metrics` | Re-loading the same `ts_ingest` updates the run summary. |
 | `risk_summary` | Re-loading the same `(symbol, ts_ingest)` updates the serving summary. |
 | `external_signal_summary` | Re-loading the same `(name, source, latest_signal_id)` updates that latest-signal row. |
+| `daily_returns` | Re-loading the same `calculation_id` converges on one stored calculation while a changed source history creates a different version key. |
+| `daily_volatility` | Re-loading the same `calculation_id` converges; a different window or source history creates another retained row. |
+| `daily_risk_summary` | Re-loading the same `calculation_id` converges; the current view ranks versions within an explicit parameterised grain. |
 
 Raw parquet uses `event_id` as the global logical key, matching processing and
 the warehouse. Before publication, the local writer inventories existing raw
@@ -118,6 +124,31 @@ no-overwrite creation on the local filesystem.
 3. data_quality_metrics
 4. risk_summary
 5. external_signal_summary
+6. daily_returns
+7. daily_volatility
+8. daily_risk_summary
+
+## Daily Current-Version Contract
+
+The three daily warehouse tables preserve every deterministic calculation ID.
+The current view does not collapse parameter changes into one row. Its grain is:
+
+```text
+(source, symbol, ts_event, model_version,
+ volatility_window, var_window, var_confidence, annualization_days)
+```
+
+Within that grain, the greatest `ts_ingest` wins; `calculation_id` is the stable
+tie-break. This lets a late historical observation supersede an older serving
+version without deleting the earlier analytical evidence.
+
+`daily-risk-v2` makes the volatility window and annualisation basis explicit.
+Legacy v1 rows can remain queryable with those newly introduced fields null;
+new v2 rows are constrained to populate both.
+
+`daily_risk_semantic_model` joins `current_symbol_dimension` on both `symbol`
+and `source`. That source-aware join prevents reference data for one provider
+from being applied to another provider's risk calculation.
 
 ## Modelling Trade-Offs To Understand
 
@@ -127,10 +158,10 @@ no-overwrite creation on the local filesystem.
 2. `data_quality_metrics` uses `ts_ingest` as its natural run key. That is fine
    for the demo, but an explicit `pipeline_run_id` would be more robust when two
    runs share the same latest ingest timestamp.
-3. `risk_summary` joins to the current symbol dimension by symbol only in the
-   semantic view. This is simple for the demo, but source-aware reporting would
-   need either `source` on the risk summary or a clear rule for choosing a symbol
-   dimension source.
+3. The original `risk_summary` semantic view joins the current symbol dimension
+   by symbol only. The daily semantic model improves this boundary by joining on
+   both source and symbol; migrating the original view remains a separate
+   compatibility decision.
 4. `symbol_dimension_history` has constraints for valid intervals and one
    current row per symbol/source. It does not currently enforce non-overlapping
    historical intervals in the database, so that should be covered by tests or
@@ -150,6 +181,9 @@ no-overwrite creation on the local filesystem.
    PostgreSQL raw loader still has its existing `ON CONFLICT DO UPDATE`
    contract; changing warehouse correction policy requires a separate
    warehouse-owned change and migration decision.
+9. Daily warehouse history is append-by-calculation identity, while the current
+   view is derived at query time. A larger system might materialise current
+   state, record explicit supersession links or use a transactional table format.
 
 ## External Signal Summary
 

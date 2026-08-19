@@ -130,6 +130,128 @@ CREATE TABLE IF NOT EXISTS risk_platform.external_signal_summary (
 CREATE INDEX IF NOT EXISTS idx_external_signal_summary_latest
     ON risk_platform.external_signal_summary (latest_ts_event DESC, name, source);
 
+CREATE TABLE IF NOT EXISTS risk_platform.daily_returns (
+    calculation_id TEXT PRIMARY KEY,
+    model_version TEXT NOT NULL,
+    source TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    source_event_id TEXT NOT NULL,
+    previous_source_event_id TEXT NOT NULL,
+    ts_event TIMESTAMPTZ NOT NULL,
+    ts_ingest TIMESTAMPTZ NOT NULL,
+    return_1d DOUBLE PRECISION NOT NULL,
+    loaded_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CHECK (calculation_id <> ''),
+    CHECK (model_version <> ''),
+    CHECK (source <> ''),
+    CHECK (symbol = UPPER(symbol)),
+    CHECK (source_event_id <> previous_source_event_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_daily_returns_lookup
+    ON risk_platform.daily_returns (
+        source,
+        symbol,
+        ts_event DESC,
+        model_version,
+        ts_ingest DESC
+    );
+
+CREATE TABLE IF NOT EXISTS risk_platform.daily_volatility (
+    calculation_id TEXT PRIMARY KEY,
+    model_version TEXT NOT NULL,
+    source TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    source_event_id TEXT NOT NULL,
+    window_start TIMESTAMPTZ NOT NULL,
+    window_end TIMESTAMPTZ NOT NULL,
+    window_observations INTEGER NOT NULL CHECK (window_observations >= 2),
+    annualization_days INTEGER NOT NULL CHECK (annualization_days > 0),
+    ts_event TIMESTAMPTZ NOT NULL,
+    ts_ingest TIMESTAMPTZ NOT NULL,
+    volatility_annualized DOUBLE PRECISION NOT NULL CHECK (volatility_annualized >= 0),
+    loaded_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CHECK (calculation_id <> ''),
+    CHECK (model_version <> ''),
+    CHECK (source <> ''),
+    CHECK (symbol = UPPER(symbol)),
+    CHECK (window_start < window_end),
+    CHECK (window_end = ts_event)
+);
+
+CREATE INDEX IF NOT EXISTS idx_daily_volatility_lookup
+    ON risk_platform.daily_volatility (
+        source,
+        symbol,
+        ts_event DESC,
+        model_version,
+        window_observations,
+        annualization_days,
+        ts_ingest DESC
+    );
+
+CREATE TABLE IF NOT EXISTS risk_platform.daily_risk_summary (
+    calculation_id TEXT PRIMARY KEY,
+    model_version TEXT NOT NULL,
+    source TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    source_event_id TEXT NOT NULL,
+    ts_event TIMESTAMPTZ NOT NULL,
+    ts_ingest TIMESTAMPTZ NOT NULL,
+    price_close DOUBLE PRECISION NOT NULL CHECK (price_close > 0),
+    return_1d DOUBLE PRECISION NOT NULL,
+    volatility_annualized DOUBLE PRECISION CHECK (volatility_annualized >= 0),
+    volatility_window INTEGER CHECK (volatility_window IS NULL OR volatility_window >= 2),
+    annualization_days INTEGER CHECK (annualization_days IS NULL OR annualization_days > 0),
+    historical_var_loss DOUBLE PRECISION CHECK (historical_var_loss >= 0),
+    var_confidence DOUBLE PRECISION NOT NULL CHECK (var_confidence > 0 AND var_confidence < 1),
+    var_window INTEGER NOT NULL CHECK (var_window >= 2),
+    var_observations INTEGER NOT NULL CHECK (var_observations >= 0),
+    maximum_drawdown DOUBLE PRECISION NOT NULL CHECK (
+        maximum_drawdown >= -1 AND maximum_drawdown <= 0
+    ),
+    price_observations INTEGER NOT NULL CHECK (price_observations >= 2),
+    return_observations INTEGER NOT NULL CHECK (return_observations >= 1),
+    history_status TEXT NOT NULL CHECK (history_status IN ('partial', 'ready')),
+    input_first_event_id TEXT NOT NULL,
+    input_last_event_id TEXT NOT NULL,
+    var_input_first_event_id TEXT NOT NULL,
+    loaded_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CHECK (calculation_id <> ''),
+    CHECK (model_version <> ''),
+    CHECK (source <> ''),
+    CHECK (symbol = UPPER(symbol)),
+    CHECK (return_observations = price_observations - 1),
+    CHECK (var_observations <= var_window),
+    CHECK (
+        model_version <> 'daily-risk-v2'
+        OR (volatility_window IS NOT NULL AND annualization_days IS NOT NULL)
+    ),
+    CHECK (
+        model_version <> 'daily-risk-v2'
+        OR history_status <> 'ready'
+        OR (
+            return_observations >= GREATEST(volatility_window, var_window)
+            AND var_observations >= var_window
+            AND volatility_annualized IS NOT NULL
+        )
+    )
+);
+
+CREATE INDEX IF NOT EXISTS idx_daily_risk_summary_version_lookup
+    ON risk_platform.daily_risk_summary (
+        source,
+        symbol,
+        ts_event DESC,
+        model_version,
+        volatility_window,
+        var_window,
+        var_confidence,
+        annualization_days,
+        ts_ingest DESC,
+        calculation_id DESC
+    );
+
 CREATE TABLE IF NOT EXISTS risk_platform.symbol_dimension_history (
     symbol_dimension_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     symbol TEXT NOT NULL,
@@ -218,6 +340,80 @@ SELECT
     record_hash
 FROM risk_platform.symbol_dimension_history
 WHERE is_current;
+
+CREATE OR REPLACE VIEW risk_platform.latest_daily_risk_summary AS
+SELECT
+    calculation_id,
+    model_version,
+    source,
+    symbol,
+    source_event_id,
+    ts_event,
+    ts_ingest,
+    price_close,
+    return_1d,
+    volatility_annualized,
+    volatility_window,
+    annualization_days,
+    historical_var_loss,
+    var_confidence,
+    var_window,
+    var_observations,
+    maximum_drawdown,
+    price_observations,
+    return_observations,
+    history_status,
+    input_first_event_id,
+    input_last_event_id,
+    var_input_first_event_id
+FROM (
+    SELECT
+        summary.*,
+        ROW_NUMBER() OVER (
+            PARTITION BY
+                source,
+                symbol,
+                ts_event,
+                model_version,
+                volatility_window,
+                var_window,
+                var_confidence,
+                annualization_days
+            ORDER BY ts_ingest DESC, calculation_id DESC
+        ) AS version_rank
+    FROM risk_platform.daily_risk_summary summary
+) ranked
+WHERE version_rank = 1;
+
+CREATE OR REPLACE VIEW risk_platform.daily_risk_semantic_model AS
+SELECT
+    risk.calculation_id,
+    risk.model_version,
+    risk.source,
+    risk.symbol,
+    dim.asset_class,
+    dim.reporting_currency,
+    dim.sector,
+    dim.effective_from AS dimension_effective_from,
+    risk.ts_event AS metric_ts,
+    risk.ts_ingest AS calculation_ts,
+    risk.price_close,
+    risk.return_1d,
+    risk.volatility_annualized,
+    risk.volatility_window,
+    risk.annualization_days,
+    risk.historical_var_loss,
+    risk.var_confidence,
+    risk.var_window,
+    risk.var_observations,
+    risk.maximum_drawdown,
+    risk.price_observations,
+    risk.return_observations,
+    risk.history_status
+FROM risk_platform.latest_daily_risk_summary risk
+LEFT JOIN risk_platform.current_symbol_dimension dim
+    ON risk.symbol = dim.symbol
+    AND risk.source = dim.source;
 
 CREATE OR REPLACE VIEW risk_platform.finance_risk_semantic_model AS
 WITH current_symbol AS (

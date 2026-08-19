@@ -15,7 +15,7 @@ from ..common.exceptions import ValidationError
 from ..ingestion.schemas import MarketEvent
 from .risk_metrics import value_at_risk
 
-MODEL_VERSION = "daily-risk-v1"
+MODEL_VERSION = "daily-risk-v2"
 TRADING_DAYS_PER_YEAR = 252
 
 EventInput: TypeAlias = MarketEvent | Mapping[str, Any]
@@ -245,6 +245,8 @@ def build_daily_risk_outputs(
                     "price_close": float(current.price),
                     "return_1d": return_value,
                     "volatility_annualized": volatility_value,
+                    "volatility_window": volatility_window,
+                    "annualization_days": TRADING_DAYS_PER_YEAR,
                     "historical_var_loss": var_loss,
                     "var_confidence": confidence,
                     "var_window": var_window,
