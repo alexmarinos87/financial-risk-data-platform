@@ -1,342 +1,280 @@
 # Architecture
 
-This document follows the twelve-section arc42 structure. It describes the
-implemented local platform, the disabled-by-default deployment scaffold, and
-the boundaries used to keep changes reviewable.
+This document uses the arc42 structure to describe the behaviour that is
+implemented and tested in this repository. Cloud resources and deployment
+manifests are described only as scaffolding unless the repository contains
+executable evidence for them.
 
 ## 1. Introduction And Goals
 
-The platform demonstrates a reliable market-risk data path:
+The platform demonstrates two related market-risk paths:
 
-1. Ingest market-like events and optional external signals.
-2. Validate, normalise, and deduplicate them.
-3. Retain replayable raw parquet and derived curated parquet.
-4. Load stable PostgreSQL-style warehouse tables.
-5. Reconcile source, raw, curated, and warehouse evidence.
-6. Show a guarded AWS/Kubernetes deployment shape without deploying by default.
+```text
+provider-neutral market events
+  -> validation, normalisation and deduplication
+  -> replayable raw Parquet
+  -> minute-oriented demo analytics
+  -> PostgreSQL serving and reconciliation
 
-The primary stakeholders are the engineer operating and extending the repo, a
-reviewer assessing engineering evidence, and downstream consumers of the
-warehouse views.
+Alpha Vantage daily closes
+  -> canonical timezone-aware market events
+  -> immutable raw Parquet
+  -> versioned daily returns and risk analytics
+  -> version-preserving PostgreSQL tables
+  -> current-version and semantic views
+```
 
 The leading quality goals are:
 
-| Priority | Quality goal | Concrete evidence |
+| Priority | Quality goal | Evidence |
 | --- | --- | --- |
-| 1 | Deterministic replay and recovery | Content-addressed parquet writes, partition locks, and resumable backfills |
-| 2 | Explicit data contracts and quality | Pydantic ingestion schemas, field/range checks, late and duplicate metrics |
-| 3 | Traceable source-to-serving behaviour | Run summaries, lineage manifests, and reconciliation SQL |
-| 4 | Safe local and cloud operation | Local-first commands, manual deployment, disabled optional databases, and security checks |
-| 5 | Reviewable evolution | Bounded modules, targeted tests, independent review, and human acceptance |
-
-The design emphasizes:
-
-1. Reproducibility and deterministic backfills.
-2. Explicit trade-offs between cost and latency.
-3. Strong schema validation at ingestion.
-4. Measurable storage and query performance improvements.
+| 1 | Deterministic replay | Stable event IDs, content-addressed Parquet and calculation IDs |
+| 2 | Explicit contracts | Pydantic schemas, dataset grains, SQL constraints and loader specs |
+| 3 | Source-to-serving traceability | Lineage, input fingerprints and reconciliation SQL |
+| 4 | Safe operation | Local-first commands, bounded scans, manual deployment and security checks |
+| 5 | Reviewable evolution | Arc42 change blocks, focused tests, CI and squash-merged PRs |
 
 ## 2. Architecture Constraints
 
-1. Python 3.10 or newer is the implementation language.
-2. The demonstrated runtime is batch or micro-batch, not a production streaming
+1. Python **3.11** is the supported and CI-tested runtime.
+2. `MarketEvent` requires timezone-aware event and ingest timestamps and
+   normalises accepted values to UTC through Pydantic `AwareDatetime`.
+3. The implemented runtime is batch or micro-batch, not a production streaming
    service.
-3. Local parquet paths model an S3-style raw and curated layout; the writer is
-   not an AWS S3 client.
-4. PostgreSQL is the demonstrated warehouse contract; MongoDB represents a
-   source-system document shape.
-5. Cloud resources and managed databases stay disabled unless explicitly
-   requested. Deployment is manually dispatched.
-6. Generated data, local state, caches, and evidence stay outside Git.
-7. Tests and local evidence must substantiate claims; scaffolded services are
-   not described as production-owned.
-8. Kinesis or another streaming expansion is outside the default architecture.
+4. Local Parquet models raw and curated object-storage layouts; it is not an AWS
+   S3 client or transactional lakehouse.
+5. PostgreSQL is the demonstrated serving contract. MongoDB is a seeded
+   source-shape playground.
+6. Dependency resolution is constrained by `requirements.lock`.
+7. Managed cloud resources remain disabled by default, and deployment is manual.
+8. Generated data, local state, credentials and evidence are excluded from Git.
+9. Tests must substantiate repository claims; scaffolding is not described as
+   production ownership.
 
 ## 3. Context And Scope
 
-### Business Context
+### Business context
 
 ```text
-Market-event files ----+
+market-data source ----+
                        |
-External signals ------+--> Financial risk data platform
-                                  |        |         |
-                                  v        v         v
-                             raw parquet  curated  warehouse views
-                                  |        |         |
-                                  +--------+---------+
-                                           |
-                                           v
-                                  engineer / reviewer
+external signals ------+--> financial risk platform
+                       |        |          |
+                       v        v          v
+                    raw data  analytics  warehouse views
+                                             |
+                                             v
+                                    engineer / reviewer
 ```
 
-The platform owns validation, normalisation, deduplication, analytical
-derivation, local storage layout, warehouse loading, and reconciliation. Source
-provider operation, production alert delivery, persistent cloud data storage,
-and live cloud ownership remain outside the demonstrated boundary.
+The platform owns validation, immutable local landing, analytical derivation,
+local warehouse loading and reconciliation. Production alert delivery,
+persistent cloud storage, provider availability and live cloud operations remain
+outside the implemented boundary.
 
-### Technical Context
+### Technical neighbours
 
-| Neighbour | Interface | Direction | Contract |
-| --- | --- | --- | --- |
-| Market-event source | JSON records | Inbound | `MarketEvent` schema and stable `event_id` |
-| External-signal source | CSV, JSON, JSONL, or NDJSON | Inbound | Signal ID, name, value, event/ingest timestamps, and source |
-| Local filesystem | Partitioned parquet in an S3-style layout | Outbound and replay | Storage paths from `config/storage.yaml` |
-| PostgreSQL | SQL and Psycopg | Outbound | Tables and views in `sql/` |
-| MongoDB demo | Seeded documents | Playground only | Documents in `mongo/init/`; not connected to the pipeline |
-| Operator | Make targets and Python CLIs | Bidirectional | Run output, quality status, lineage, and review evidence |
-| GitHub Actions | CI and manual deploy workflows | Outbound control | Validation on change; deployment only by explicit dispatch |
+| Neighbour | Interface | Contract |
+| --- | --- | --- |
+| Alpha Vantage | HTTPS `TIME_SERIES_DAILY` | Bounded adapter, stable daily event ID and completed dates |
+| Landed files | CSV, JSON, JSONL or NDJSON | Provider-neutral market and signal loaders |
+| Local filesystem | Partitioned Parquet | Paths and datasets from `config/storage.yaml` |
+| PostgreSQL | Psycopg and SQL | Tables, views and checks in `sql/` |
+| MongoDB | Seeded local documents | Source-system modelling playground |
+| Operator | Make targets and Python CLIs | Summaries, dry runs, loads and reconciliation |
+| GitHub Actions | CI and manual deploy | Read-only validation; explicit deployment dispatch |
 
 ## 4. Solution Strategy
 
-The four data-transformation layers are:
+The data plane is split into:
 
-1. Ingestion: market data and external risk signals.
-2. Raw storage: immutable, partitioned event storage.
-3. Processing: validation, deduplication, normalization, and windowing.
-4. Analytics: returns, volatility, external signal summaries, data quality, and risk summaries.
+1. **Ingestion** — source adapters and canonical schemas.
+2. **Processing** — validation, normalisation, deduplication and windowing.
+3. **Analytics** — minute metrics, daily risk and data quality.
+4. **Storage** — bounded, idempotent raw and curated Parquet publication.
+5. **Orchestration** — sequencing, locks, backfills and summaries.
+6. **Warehouse** — PostgreSQL loading, version retention, views and checks.
 
-Orchestration, warehouse serving, deployment, and engineering controls support
-these layers; they do not redefine the transformation flow.
-
-The solution uses a layered Python pipeline coordinated by one orchestration
-entry point. It validates source contracts before transformation, separates
-pure processing and analytics from I/O, writes replayable partitioned parquet,
-and loads warehouse tables with stable conflict keys. Deterministic filenames,
-partition locks, and resume checkpoints make retries and backfills explainable.
-
-Configuration is externalised in YAML. Local Docker services provide database
-evidence. The image, Kubernetes manifests, ECR/IAM Terraform, optional managed
-database resources, and manual deployment workflow demonstrate only the
-intended deployment shape. Repository controls and review-package tooling form
-a separate engineering-control plane; they never enter the data runtime.
+Daily and minute-oriented semantics stay separate. Alpha Vantage daily closes do
+not enter datasets named `returns_1m` or `volatility_5m`. Daily calculations use
+explicit model versions and deterministic calculation IDs so late source history
+can create a new traceable version without overwriting earlier evidence.
 
 ## 5. Building Block View
 
-### Level 1: System Building Blocks
+| Block | Responsibility | Principal paths |
+| --- | --- | --- |
+| `common` | Configuration, time, logging and exceptions | `src/common/` |
+| `ingestion` | Alpha Vantage and provider-neutral inbound contracts | `src/ingestion/` |
+| `processing` | Validation, normalisation, deduplication and windowing | `src/processing/` |
+| `analytics` | Returns, volatility, VaR, drawdown and quality | `src/analytics/` |
+| `storage` | Dataset configuration and local Parquet publication | `src/storage/`, `config/storage.yaml` |
+| `orchestration` | Demo pipeline, daily risk, locks and backfills | `src/orchestration/` |
+| `warehouse` | Loader specs, SQL schema, views and reconciliation | `src/warehouse/`, `sql/` |
+| `source-systems` | Local PostgreSQL and MongoDB examples | `docker-compose.yml`, `mongo/` |
+| `deployment` | Image, Kubernetes and Terraform scaffold | `Dockerfile`, `deploy/`, `infra/` |
+| `engineering-controls` | CI, security checks and review evidence | `.github/`, `scripts/`, `AGENTS.md` |
 
-```text
-                         +-----------------------+
-                         | Orchestration         |
-                         | live run / backfill   |
-                         +-----------+-----------+
-                                     |
-        +-------------+--------------+---------------+-------------+
-        |             |              |               |             |
-        v             v              v               v             v
-   Ingestion      Processing      Analytics       Storage       Warehouse
-        \             |              /               |             /
-         +------------+-------------+----------------+------------+
-                                      |
-                                Common foundation
+### Change modularity
 
-   Deployment plane                    Engineering-control plane
-   Docker / Kubernetes / Terraform     checks / tests / review evidence / docs
-```
-
-| Block ID | Responsibility | Owned paths | May depend on |
-| --- | --- | --- | --- |
-| `ingestion` | Source adapters and inbound schemas | `src/ingestion/` | `common` and the processing symbol normaliser |
-| `processing` | Validation, normalisation, deduplication, and windowing | `src/processing/` | `common` |
-| `analytics` | Returns, volatility, risk metrics, and data-quality calculations | `src/analytics/`, `config/risk_thresholds.yaml` | `common` |
-| `storage` | Partition layout, storage configuration, and idempotent local parquet writes | `src/storage/`, `config/storage.yaml` | `common` |
-| `orchestration` | Pipeline sequencing, locks, backfills, lineage, and placeholder Glue/replay entry points | `src/orchestration/`, `scripts/replay_historical_as_live.py` | ingestion, processing, analytics, storage, common |
-| `warehouse` | PostgreSQL loading, reference data, schemas, views, checks, and operational queries | `src/warehouse/`, `sql/`, `scripts/seed_reference_data.py`, `config/symbols.yaml` | storage configuration plus raw and curated dataset contracts |
-| `common` | Shared configuration, time, logging, and exceptions | `src/common/` | no data-plane block |
-| `source-systems` | Local PostgreSQL/MongoDB fixtures and source-document mapping | `docker-compose.yml`, `mongo/`, relevant walkthroughs | warehouse and ingestion contracts |
-| `benchmarking` | CSV-versus-partitioned-parquet measurement | `src/benchmarks/`, `docs/performance-benchmark.md` | storage contracts |
-| `deployment` | Image, manual deploy workflow, Kubernetes, and Terraform | `Dockerfile`, `.github/workflows/deploy.yml`, `deploy/`, `infra/` | published runtime and config contracts |
-| `engineering-controls` | CI, ownership, validation, repository security, agent workflow, and local review evidence | `.github/workflows/ci.yml`, `.github/CODEOWNERS`, `Makefile`, control scripts and tests, `AGENTS.md`, workflow docs | all blocks as evidence subjects, never as runtime dependencies |
-
-Tests belong to the block whose behaviour they prove. Configuration and
-documentation accompany a block only when the same change alters that block's
-contract or operating instructions. `Makefile` is a shared command surface:
-classify a target change by the block it executes rather than automatically as
-an engineering-control change.
-
-### Change Modularity Rules
-
-Use the level-1 blocks above to define branches and pull requests:
-
-1. Name one primary block in every task brief and PR description.
-2. Keep one branch and PR to one behavioural outcome in that block, plus its
-   tests and directly affected documentation.
-3. A vertical slice may cross blocks only when its acceptance criterion requires
-   an end-to-end contract change. List each interface crossed and keep unrelated
-   refactoring out.
-4. Treat schemas, warehouse keys, quality thresholds, locks, security, and
-   deployment as explicit contract boundaries. Split them from ordinary feature
-   work unless they are the stated objective.
-5. Keep data-plane changes separate from deployment-plane changes. A runtime
-   change may include its image/config compatibility update, but infrastructure
-   provisioning belongs in a separate high-risk PR.
-6. Keep engineering-control changes separate from pipeline behaviour. Controls
-   can inspect the data plane but must not become a runtime dependency.
-7. If a proposed diff has two plausible primary blocks or cannot be explained
-   with one runtime scenario, split it before implementation.
-8. Use `agent/<block>-<outcome>` for automated branches and record the base SHA.
-   A branch never writes directly to `main`.
-
-The normal 200–500 non-generated changed-line budget remains a review heuristic,
-not a target. A larger atomic contract plus its tests may stay together when a
-split would create an invalid or unverified intermediate state; record that
-rationale explicitly.
-
-| Primary block | Minimum validation |
-| --- | --- |
-| ingestion, processing, analytics, storage, orchestration, common, or benchmarking | `make security-check && make quality-check && make readiness-check` |
-| warehouse | `make security-check && make quality-check && make readiness-check`; add Docker reconciliation when available |
-| source-systems | Compose YAML parse, lint, tests, and relevant Docker checks when available |
-| deployment | `make security-check && make infrastructure-check` |
-| Python engineering-controls | Focused tests, `make security-check`, `make quality-check`, and `git diff --check` |
-| Documentation-only controls | `make security-check && git diff --check` |
+Each PR names one primary block. A vertical slice may cross interfaces only when
+the acceptance criterion requires an end-to-end contract. Data-plane,
+deployment-plane and engineering-control changes remain separate unless a
+runtime compatibility change makes the crossing unavoidable.
 
 ## 6. Runtime View
 
-### Normal Pipeline Run
+### Minute-oriented demo
 
 ```text
-load inputs
-  -> validate and normalise
-  -> deduplicate
-  -> calculate returns, volatility, quality, and risk summaries
-  -> acquire affected partition locks
-  -> write raw and curated parquet
-  -> release locks
-  -> emit run summary and optional lineage
-
-separate operator step
-  -> optionally load PostgreSQL with idempotent upserts
+JSON events
+  -> required-field, null and numeric validation
+  -> UTC-normalised MarketEvent rows
+  -> event-ID deduplication
+  -> returns, rolling volatility, quality and risk summaries
+  -> partition locks
+  -> raw and curated Parquet
+  -> optional PostgreSQL load
 ```
 
-Invalid required fields or values stop curated publication. Late and duplicate
-records remain visible in quality evidence rather than being silently ignored.
-The individual parquet dataset writes are idempotent but are not one
+Late and duplicate records remain visible in quality metrics. Individual dataset
+writes are idempotent, but the local filesystem does not provide one
 multi-dataset transaction.
+
+### Alpha Vantage daily risk
+
+```text
+bounded provider request
+  -> completed daily closes
+  -> immutable raw MarketEvent Parquet
+  -> daily-risk-v2 calculations
+  -> daily_returns
+  -> daily_volatility
+  -> daily_risk_summary
+```
+
+The daily calculation contract records:
+
+- close-to-close return;
+- annualised sample volatility using 252 trading days;
+- historical VaR loss;
+- maximum drawdown;
+- window parameters and history readiness;
+- source event and calculation fingerprints.
+
+Identical inputs and parameters reproduce identical output files. Late history
+changes the fingerprint and creates a distinguishable calculation version.
+
+### Daily warehouse serving
+
+```text
+daily curated Parquet
+  -> calculation-ID upserts
+  -> version-preserving history tables
+  -> parameter-aware latest view
+  -> source-aware symbol enrichment
+  -> reconciliation checks
+```
+
+The daily tables are:
+
+- `risk_platform.daily_returns`
+- `risk_platform.daily_volatility`
+- `risk_platform.daily_risk_summary`
+
+`latest_daily_risk_summary` selects one current row per source, symbol, event
+date, model version and parameter set. `daily_risk_semantic_model` joins symbol
+reference data on both `source` and `symbol`.
 
 ### Backfill
 
-The backfill runner reads raw hourly partitions, starts after the last successful
-checkpoint when resuming, obtains the same partition locks as a live run, and
-invokes the normal pipeline. An overlap blocks the run; a successful partition
-updates local resume state. See `docs/failure-scenarios.md`.
-
-### Change Acceptance
-
-```text
-bounded implementation
-  -> independent correctness review
-  -> production-failure challenge
-  -> automated validation
-  -> ignored local evidence package
-  -> human acceptance decision
-```
-
-This control flow does not run in the container or touch pipeline data.
+The hourly backfill runner reads immutable raw partitions, resumes after the last
+successful checkpoint, uses the same partition locks as live processing and
+updates local resume state only after success. Daily Alpha Vantage observations
+are excluded from the minute-oriented backfill path.
 
 ## 7. Deployment View
 
-| Environment | Nodes and stores | Purpose |
-| --- | --- | --- |
-| Developer workstation | Python virtual environment, local filesystem parquet, optional Docker PostgreSQL/MongoDB | Primary implemented and tested path |
-| GitHub Actions | Ephemeral runners | Security, Python, and infrastructure validation; manual deployment workflow |
-| Container runtime | Non-root Python image | Runs `src.orchestration.run_pipeline` with packaged config and SQL |
-| Kubernetes scaffold | CronJob, ConfigMaps, service account, network policy, dev/prod overlays | Packaging and security shape; data is currently an `emptyDir`, not persistent storage |
-| AWS scaffold | ECR and GitHub OIDC IAM; false-by-default RDS, Aurora, and DocumentDB | Managed deployment examples; S3 and Glue files are placeholders and no EKS cluster is provisioned |
+| Environment | Implemented purpose |
+| --- | --- |
+| Developer workstation | Python, local Parquet and optional Docker databases |
+| GitHub Actions | Security, Python readiness and infrastructure validation |
+| Container | Non-root packaging of the default demo runtime |
+| Kubernetes | CronJob, ConfigMaps, service account, network policy and overlays |
+| AWS scaffold | ECR/OIDC plus disabled optional database examples |
 
-The deploy workflow is `workflow_dispatch` only and expects a pre-existing EKS
-cluster. It can build, validate, and apply Kubernetes resources after explicit
-invocation. When configured and authorised, it pushes an image tagged with the
-commit SHA and workflow attempt to ECR, injects that same image into the selected
-dev or prod overlay, then server-side dry-runs, diffs, and applies the same
-rendered manifest. Normal validation never deploys or runs `terraform apply`.
+Kubernetes currently uses ephemeral storage. Terraform does not provision the
+EKS cluster expected by the manual deployment workflow. Normal validation never
+deploys and never runs `terraform apply`.
 
 ## 8. Cross-Cutting Concepts
 
-| Concept | Approach | Evidence |
-| --- | --- | --- |
-| Data contracts | Pydantic at ingestion; explicit dataset grain and keys | `src/ingestion/schemas.py`, `docs/data-model.md` |
-| Time | Event and ingest time remain distinct; loaders normalise to UTC, but direct schema input can currently remain timezone-naive | `src/common/time.py`, `src/ingestion/market_data_loader.py`, `src/processing/windowing.py` |
-| Idempotency | Stable event/table keys and content-addressed parquet filenames | `src/storage/s3_writer.py`, `src/warehouse/postgres_loader.py` |
-| Concurrency | Partition locks prevent live/backfill overlap | `src/orchestration/locks.py` |
-| Recovery | Replayable raw data, resume checkpoints, and deterministic reruns | `src/orchestration/backfill.py` |
-| Configuration | YAML config loaded through shared helpers and mounted into deployments | `config/`, `src/common/config.py` |
-| Observability | Structured run summaries, lineage, quality metrics, and ops SQL | `src/orchestration/lineage.py`, `sql/ops_queries.sql` |
-| Security | Local-only defaults, secret scanning, CODEOWNERS, restricted pod defaults, and manual deploy | `scripts/security_check.py`, `docs/security-protocols.md` |
-| Human authority | Automated output is evidence; acceptance, merge, and deploy remain human decisions | `docs/engineering-delivery-workflow.md` |
+| Concept | Approach |
+| --- | --- |
+| Time | Aware timestamps only at the canonical event boundary; UTC internally |
+| Identity | Stable source event IDs and deterministic calculation IDs |
+| Replay | Immutable raw data and content-addressed curated files |
+| Versioning | Daily calculation versions are retained rather than overwritten |
+| Configuration | YAML for storage, thresholds, symbols and operator choices |
+| Data quality | Required fields, nulls, ranges, late and duplicate evidence |
+| Concurrency | Local partition locks and repository-global lease fencing |
+| Recovery | Resume checkpoints and safe reruns |
+| Security | No committed secrets, bounded I/O and disabled cloud defaults |
+| Human authority | Automated output is evidence; merge and deployment remain explicit decisions |
 
 ## 9. Architecture Decisions
 
-| Decision | Consequence and trade-off | Evidence |
-| --- | --- | --- |
-| Batch/micro-batch before streaming | Lower operational complexity at the cost of latency | `docs/tradeoffs.md` |
-| Retry/replay-tolerant local processing with idempotent outputs | Repeated local inputs are safe; no message-delivery or acknowledgement semantics are implemented | Storage and warehouse tests |
-| Replayable local parquet before curated publication | Backfills are explainable; local files are not a transactional lakehouse or S3 integration | `src/storage/s3_writer.py` |
-| One orchestrator over small functional blocks | End-to-end flow is easy to follow; the coordinator requires disciplined boundaries | `src/orchestration/run_pipeline.py` |
-| PostgreSQL serving contract | Familiar upserts and reconciliation; not a distributed analytical warehouse | `src/warehouse/postgres_loader.py`, `sql/` |
-| Coarse partition locks | Simple overlap protection; not a distributed lock service | `src/orchestration/locks.py` |
-| Manual, disabled-by-default cloud paths | Prevents surprise cost or mutation; live deployment requires explicit setup | `infra/terraform/variables.tf`, `.github/workflows/deploy.yml` |
-| arc42 blocks define change modules | PRs align to runtime ownership; deliberate vertical slices must describe crossed interfaces | This document |
-
-## 10. Quality Requirements
-
-| ID | Scenario | Required response | Evidence |
-| --- | --- | --- | --- |
-| Q1 | The same source batch is replayed | Do not create duplicate parquet files or warehouse facts | S3 writer and loader tests |
-| Q2 | An event arrives late or duplicated | Complete valid processing and expose the condition in quality metrics | Data-quality tests and demo output |
-| Q3 | A required field or numeric range is invalid | Fail before curated publication with explainable validation detail | Ingestion and pipeline tests |
-| Q4 | A backfill is interrupted or overlaps a live partition | Resume after the last success or stop on the active lock | Backfill and lock tests |
-| Q5 | Default infrastructure validation runs | Validate without deploying or creating optional managed databases | Security and infrastructure checks |
-| Q6 | An agent-authored change is reviewed | Keep automated evidence distinct and the final decision pending | Morning-review tests and workflow docs |
-| Q7 | A proposed change spans unrelated blocks | Split it or record the end-to-end contract and cohesion rationale | Change modularity rules above |
-
-### Evidence Map
-
-| Architecture decision | Local evidence |
+| Decision | Consequence |
 | --- | --- |
-| Validate before transformation | `src/orchestration/run_pipeline.py`, `src/analytics/data_quality.py`, `tests/unit/test_data_quality.py` |
-| Keep raw data replayable | `src/storage/s3_writer.py`, `tests/integration/test_s3_writer.py` |
-| Make backfills deterministic | `src/orchestration/backfill.py`, `src/orchestration/locks.py`, `tests/integration/test_backfill.py` |
-| Serve stable warehouse outputs | `src/warehouse/postgres_loader.py`, `sql/postgres_schema.sql`, `sql/ops_queries.sql` |
-| Trace source-to-report lineage | `src/orchestration/lineage.py`, `.demo/lineage.json`, `tests/unit/test_lineage.py` |
-| Reconcile source to warehouse | `sql/consistency_checks.sql`, `docs/data-consistency-walkthrough.md` |
-| Validate infrastructure without deploying | `Makefile`, `deploy/kubernetes/`, `infra/terraform/` |
+| Batch before streaming | Lower operational complexity at the cost of latency |
+| Immutable raw before analytics | Explainable replay, but no table-format transactions |
+| Separate daily and minute semantics | Clear grains and names, with two orchestration paths |
+| Calculation ID as daily warehouse key | Retains corrections and parameter versions |
+| PostgreSQL serving | Familiar constraints and views, not a distributed warehouse |
+| Local locks | Simple overlap protection, not distributed coordination |
+| Manual cloud activation | Prevents surprise cost and mutation |
+| Arc42 blocks for PR scope | Improves reviewability and limits mixed concerns |
+
+## 10. Quality Scenarios
+
+| ID | Scenario | Required response |
+| --- | --- | --- |
+| Q1 | The same source batch is replayed | Write no duplicate raw, curated or warehouse facts |
+| Q2 | A source event is corrected late | Preserve the earlier version and create traceable new calculations |
+| Q3 | A timestamp lacks a timezone | Reject it at the canonical schema boundary |
+| Q4 | A required field or numeric range is invalid | Stop before curated publication |
+| Q5 | Live and backfill work overlap | Block on the active partition lock |
+| Q6 | Daily history is insufficient | Emit `partial` rather than implying full readiness |
+| Q7 | A warehouse consumer asks for current daily risk | Return one row per parameterised grain |
+| Q8 | Default infrastructure checks run | Validate without deployment or resource creation |
 
 ## 11. Risks And Technical Debt
 
-1. Locks and backfill checkpoints are local files, not distributed coordination.
-2. Parquet writes are idempotent files, not atomic multi-table transactions or
-   AWS S3 writes.
-3. The Kubernetes CronJob uses ephemeral `emptyDir` storage; it is not a durable
-   cloud data path.
-4. Terraform contains S3, Glue, and Kinesis placeholders and does not provision
-   the EKS cluster expected by the deploy workflow.
-5. `config/environments.yaml` is not consumed by the current runtime.
-6. Direct `MarketEvent` validation does not currently require timezone-aware
-   timestamps even though UTC is the intended convention.
-7. Some analytical names imply fixed time windows while the current calculations
-   can be observation-count based; `docs/data-model.md` records the distinction.
-8. `data_quality_metrics` uses the latest ingest timestamp as a run key rather
-   than a dedicated pipeline-run identifier.
-9. Historical dimension intervals are checked by tooling but not fully excluded
-   by a database constraint.
-10. Production alert delivery, dashboards, capacity tests, and live cloud
-   operation are not implemented claims.
-11. The orchestration coordinator is intentionally direct; extract additional
-    services only when a second runtime or independently evolving contract makes
-    the boundary valuable.
-12. `infra/diagrams/architecture.png` is currently a placeholder rather than
-    architectural evidence.
+1. `main` still requires repository-level protection to enforce the CI gates;
+   issue #51 tracks the administrative setting.
+2. Local Parquet is not durable cloud storage or a transactional table format.
+3. Kubernetes storage is ephemeral.
+4. S3, Glue and Kinesis Terraform files remain placeholders.
+5. The default container command runs the minute-oriented demo, not the daily
+   operator sequence.
+6. Production scheduling, alerts and dashboards are not implemented.
+7. Portfolio-level aggregation and correlation risk are not yet implemented.
+8. Exchange-specific trading calendars are not used; daily observations are
+   consecutive available closes, not guaranteed calendar-day intervals.
+9. PostgreSQL reconciliation is an explicit local operator step rather than a CI
+   database service.
+10. Repository control documentation is extensive relative to the compact data
+    runtime and should not grow ahead of product evidence.
 
 ## 12. Glossary
 
-| Term | Meaning in this repository |
+| Term | Meaning |
 | --- | --- |
-| Raw | Validated, normalised, deduplicated event-level parquet retained for replay; not the untouched provider payload |
-| Curated | Derived analytical parquet datasets such as returns, volatility, quality, and risk summaries |
-| Warehouse | PostgreSQL tables and views used for stable serving and reconciliation |
-| Event time | When the source event occurred (`ts_event`) |
-| Ingest time | When the platform received the event (`ts_ingest`) |
-| Backfill | Deterministic replay of historical raw partitions through the normal pipeline |
-| Engineering-control plane | Repository checks, tests, review evidence, and delivery policy outside the data runtime |
-| Human acceptance | The engineer's explicit decision after understanding the diff and its evidence; never an automated status |
+| Raw | Validated, normalised event-level Parquet retained for replay |
+| Curated | Derived analytical Parquet |
+| Event time | When the market observation occurred |
+| Ingest time | When the platform accepted the observation |
+| Calculation ID | Deterministic identity of model version, parameters and inputs |
+| Current version | Latest ingest/calculation within a declared serving grain |
+| Partial history | Valid output without enough observations for every configured window |
+| Human acceptance | Explicit engineer decision after reviewing code and evidence |
