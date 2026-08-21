@@ -14,8 +14,9 @@ VOL_WINDOW ?= 20
 VAR_WINDOW ?= 60
 VAR_CONFIDENCE ?= 0.95
 COVARIANCE_WINDOW ?= 20
+ATTRIBUTION_MAX_SNAPSHOTS ?= 2500
 
-.PHONY: setup lint type-check test dependency-check format benchmark-io docker-build k8s-render-dev k8s-render-prod k8s-check terraform-check infrastructure-check quality-check iteration-check clean-generated security-check readiness-check sandbox-once overnight-sandbox morning-review daily-risk-demo portfolio-risk-demo portfolio-attribution-demo warehouse-schema daily-risk-warehouse-dry-run daily-risk-warehouse-load check-daily-risk-consistency portfolio-risk-warehouse-dry-run portfolio-risk-warehouse-load check-portfolio-risk-consistency portfolio-attribution-warehouse-dry-run portfolio-attribution-warehouse-load check-portfolio-attribution-consistency local-db-up local-db-down local-db-wait local-db-logs postgres-shell mongo-shell run-demo load-postgres-demo load-postgres-dry-run check-postgres-consistency consistency-demo
+.PHONY: setup lint type-check test dependency-check format benchmark-io docker-build k8s-render-dev k8s-render-prod k8s-check terraform-check infrastructure-check quality-check iteration-check clean-generated security-check readiness-check sandbox-once overnight-sandbox morning-review daily-risk-demo portfolio-risk-demo portfolio-attribution-demo portfolio-attribution-history-demo warehouse-schema daily-risk-warehouse-dry-run daily-risk-warehouse-load check-daily-risk-consistency portfolio-risk-warehouse-dry-run portfolio-risk-warehouse-load check-portfolio-risk-consistency portfolio-attribution-warehouse-dry-run portfolio-attribution-warehouse-load check-portfolio-attribution-consistency local-db-up local-db-down local-db-wait local-db-logs postgres-shell mongo-shell run-demo load-postgres-demo load-postgres-dry-run check-postgres-consistency consistency-demo
 
 setup:
 	python3 -m venv .venv
@@ -136,6 +137,23 @@ portfolio-attribution-demo:
 		--end-date "$$end_date" \
 		--covariance-window "$(COVARIANCE_WINDOW)" \
 		--summary-json .demo/portfolio-attribution-summary.json
+
+portfolio-attribution-history-demo:
+	@set -eu; \
+	end_date="$(END_DATE)"; \
+	if [ -z "$$end_date" ]; then \
+		end_date="$$($(PYTHON) -c 'from datetime import datetime, timedelta, timezone; print((datetime.now(timezone.utc).date() - timedelta(days=1)).isoformat())')"; \
+	fi; \
+	start_args=""; \
+	if [ -n "$(START_DATE)" ]; then start_args="--start-date $(START_DATE)"; fi; \
+	$(PYTHON) -m src.orchestration.run_portfolio_attribution_history \
+		--portfolio-id "$(PORTFOLIO_ID)" \
+		--portfolio-config "$(PORTFOLIO_CONFIG)" \
+		$$start_args \
+		--end-date "$$end_date" \
+		--covariance-window "$(COVARIANCE_WINDOW)" \
+		--max-snapshots "$(ATTRIBUTION_MAX_SNAPSHOTS)" \
+		--summary-json .demo/portfolio-attribution-history-summary.json
 
 warehouse-schema: local-db-wait
 	docker compose exec -T postgres psql -U risk_user -d risk_platform \
