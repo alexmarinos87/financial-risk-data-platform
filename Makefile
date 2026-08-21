@@ -5,6 +5,8 @@ LOCK_FILE ?= requirements.lock
 LOCAL_POSTGRES_DSN ?= postgresql://risk_user:risk_password@localhost:5433/risk_platform
 REVIEW_BASE_REF ?= origin/main
 SYMBOL ?= IBM
+PORTFOLIO_ID ?= us-tech-equal
+PORTFOLIO_CONFIG ?= config/portfolios.yaml
 START_DATE ?=
 END_DATE ?=
 MAX_RECORDS ?= 100
@@ -12,7 +14,7 @@ VOL_WINDOW ?= 20
 VAR_WINDOW ?= 60
 VAR_CONFIDENCE ?= 0.95
 
-.PHONY: setup lint type-check test dependency-check format benchmark-io docker-build k8s-render-dev k8s-render-prod k8s-check terraform-check infrastructure-check quality-check iteration-check clean-generated security-check readiness-check sandbox-once overnight-sandbox morning-review daily-risk-demo daily-risk-warehouse-dry-run daily-risk-warehouse-load check-daily-risk-consistency local-db-up local-db-down local-db-wait local-db-logs postgres-shell mongo-shell run-demo load-postgres-demo load-postgres-dry-run check-postgres-consistency consistency-demo
+.PHONY: setup lint type-check test dependency-check format benchmark-io docker-build k8s-render-dev k8s-render-prod k8s-check terraform-check infrastructure-check quality-check iteration-check clean-generated security-check readiness-check sandbox-once overnight-sandbox morning-review daily-risk-demo portfolio-risk-demo daily-risk-warehouse-dry-run daily-risk-warehouse-load check-daily-risk-consistency local-db-up local-db-down local-db-wait local-db-logs postgres-shell mongo-shell run-demo load-postgres-demo load-postgres-dry-run check-postgres-consistency consistency-demo
 
 setup:
 	python3 -m venv .venv
@@ -102,6 +104,24 @@ daily-risk-demo:
 		--var-window "$(VAR_WINDOW)" \
 		--var-confidence "$(VAR_CONFIDENCE)" \
 		--summary-json .demo/daily-risk-summary.json
+
+portfolio-risk-demo:
+	@set -eu; \
+	end_date="$(END_DATE)"; \
+	if [ -z "$$end_date" ]; then \
+		end_date="$$($(PYTHON) -c 'from datetime import datetime, timedelta, timezone; print((datetime.now(timezone.utc).date() - timedelta(days=1)).isoformat())')"; \
+	fi; \
+	start_args=""; \
+	if [ -n "$(START_DATE)" ]; then start_args="--start-date $(START_DATE)"; fi; \
+	$(PYTHON) -m src.orchestration.run_portfolio_risk \
+		--portfolio-id "$(PORTFOLIO_ID)" \
+		--portfolio-config "$(PORTFOLIO_CONFIG)" \
+		$$start_args \
+		--end-date "$$end_date" \
+		--vol-window "$(VOL_WINDOW)" \
+		--var-window "$(VAR_WINDOW)" \
+		--var-confidence "$(VAR_CONFIDENCE)" \
+		--summary-json .demo/portfolio-risk-summary.json
 
 daily-risk-warehouse-dry-run:
 	$(PYTHON) -m src.warehouse.postgres_loader --dry-run

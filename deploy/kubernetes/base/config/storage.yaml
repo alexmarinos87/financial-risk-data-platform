@@ -14,6 +14,8 @@ storage:
       daily_returns: "daily_returns"
       daily_volatility: "daily_volatility"
       daily_risk_summary: "daily_risk_summary"
+      portfolio_daily_returns: "portfolio_daily_returns"
+      portfolio_daily_risk_summary: "portfolio_daily_risk_summary"
   format: "parquet"
   partitioning:
     granularity: "hourly"

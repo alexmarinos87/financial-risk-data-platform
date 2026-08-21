@@ -15,6 +15,8 @@ def test_storage_config_valid():
         "daily_returns",
         "daily_volatility",
         "daily_risk_summary",
+        "portfolio_daily_returns",
+        "portfolio_daily_risk_summary",
     }.issubset(storage["curated"]["datasets"])
     assert storage["partitioning"]["granularity"]
 
