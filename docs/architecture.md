@@ -1,13 +1,12 @@
 # Architecture
 
-This document uses the arc42 structure to describe the behaviour that is
-implemented and tested in this repository. Cloud resources and deployment
-manifests are described only as scaffolding unless the repository contains
-executable evidence for them.
+This document uses the arc42 structure to describe behaviour that is implemented
+and tested in this repository. Cloud resources and deployment manifests are
+described only as scaffolding unless executable evidence exists for them.
 
 ## 1. Introduction And Goals
 
-The platform demonstrates two related market-risk paths:
+The platform demonstrates three related market-risk paths:
 
 ```text
 provider-neutral market events
@@ -27,6 +26,8 @@ current daily-return versions
   -> configured long-only portfolio weights
   -> complete-date alignment
   -> versioned portfolio returns and risk summaries
+  -> version-preserving PostgreSQL tables
+  -> current-version, semantic and contribution views
 ```
 
 The leading quality goals are:
@@ -35,7 +36,7 @@ The leading quality goals are:
 | --- | --- | --- |
 | 1 | Deterministic replay | Stable event IDs, content-addressed Parquet and calculation IDs |
 | 2 | Explicit contracts | Pydantic schemas, dataset grains, SQL constraints and loader specs |
-| 3 | Source-to-serving traceability | Lineage, input fingerprints and reconciliation SQL |
+| 3 | Source-to-serving traceability | Lineage, input fingerprints, JSON evidence and reconciliation SQL |
 | 4 | Safe operation | Local-first commands, bounded scans, manual deployment and security checks |
 | 5 | Reviewable evolution | Arc42 change blocks, focused tests, CI and squash-merged PRs |
 
@@ -84,7 +85,7 @@ outside the implemented boundary.
 | Alpha Vantage | HTTPS `TIME_SERIES_DAILY` | Bounded adapter, stable daily event ID and completed dates |
 | Landed files | CSV, JSON, JSONL or NDJSON | Provider-neutral market and signal loaders |
 | Local filesystem | Partitioned Parquet | Paths and datasets from `config/storage.yaml` |
-| PostgreSQL | Psycopg and SQL | Tables, views and checks in `sql/` |
+| PostgreSQL | Psycopg and SQL | Version history, current views and reconciliation in `sql/` |
 | MongoDB | Seeded local documents | Source-system modelling playground |
 | Operator | Make targets and Python CLIs | Summaries, dry runs, loads and reconciliation |
 | GitHub Actions | CI and manual deploy | Read-only validation; explicit deployment dispatch |
@@ -100,10 +101,10 @@ The data plane is split into:
 5. **Orchestration** — sequencing, locks, backfills and summaries.
 6. **Warehouse** — PostgreSQL loading, version retention, views and checks.
 
-Daily and minute-oriented semantics stay separate. Alpha Vantage daily closes do
-not enter datasets named `returns_1m` or `volatility_5m`. Daily calculations use
-explicit model versions and deterministic calculation IDs so late source history
-can create a new traceable version without overwriting earlier evidence.
+Minute, single-symbol daily and portfolio semantics stay separate. Daily and
+portfolio calculations use explicit model versions and deterministic calculation
+IDs so late source history, changed parameters or changed weights create new
+traceable versions without overwriting earlier evidence.
 
 ## 5. Building Block View
 
@@ -112,20 +113,18 @@ can create a new traceable version without overwriting earlier evidence.
 | `common` | Configuration, time, logging and exceptions | `src/common/` |
 | `ingestion` | Alpha Vantage and provider-neutral inbound contracts | `src/ingestion/` |
 | `processing` | Validation, normalisation, deduplication and windowing | `src/processing/` |
-| `analytics` | Returns, volatility, VaR, drawdown and quality | `src/analytics/` |
+| `analytics` | Returns, volatility, VaR, drawdown, portfolio aggregation and quality | `src/analytics/` |
 | `storage` | Dataset configuration and local Parquet publication | `src/storage/`, `config/storage.yaml` |
-| `orchestration` | Demo pipeline, daily risk, locks and backfills | `src/orchestration/` |
-| `warehouse` | Loader specs, SQL schema, views and reconciliation | `src/warehouse/`, `sql/` |
+| `orchestration` | Demo pipeline, daily risk, portfolio risk, locks and backfills | `src/orchestration/` |
+| `warehouse` | Loader specs, SQL schema, current views and reconciliation | `src/warehouse/`, `sql/` |
 | `source-systems` | Local PostgreSQL and MongoDB examples | `docker-compose.yml`, `mongo/` |
 | `deployment` | Image, Kubernetes and Terraform scaffold | `Dockerfile`, `deploy/`, `infra/` |
 | `engineering-controls` | CI, security checks and review evidence | `.github/`, `scripts/`, `AGENTS.md` |
 
-### Change modularity
-
 Each PR names one primary block. A vertical slice may cross interfaces only when
 the acceptance criterion requires an end-to-end contract. Data-plane,
-deployment-plane and engineering-control changes remain separate unless a
-runtime compatibility change makes the crossing unavoidable.
+deployment-plane and engineering-control changes remain separate unless runtime
+compatibility requires otherwise.
 
 ## 6. Runtime View
 
@@ -158,17 +157,10 @@ bounded provider request
   -> daily_risk_summary
 ```
 
-The daily calculation contract records:
-
-- close-to-close return;
-- annualised sample volatility using 252 trading days;
-- historical VaR loss;
-- maximum drawdown;
-- window parameters and history readiness;
-- source event and calculation fingerprints.
-
-Identical inputs and parameters reproduce identical output files. Late history
-changes the fingerprint and creates a distinguishable calculation version.
+The daily contract records close-to-close return, annualised sample volatility,
+historical VaR loss, maximum drawdown, window parameters, history readiness and
+source fingerprints. Identical inputs and parameters reproduce identical files.
+Late history changes the fingerprint and creates a distinguishable version.
 
 ### Daily warehouse serving
 
@@ -197,7 +189,7 @@ reference data on both `source` and `symbol`.
 current daily_returns versions
   -> portfolio definition and weight validation
   -> complete-date alignment across constituents
-  -> weighted portfolio returns
+  -> constant-weight daily-rebalanced portfolio returns
   -> annualised volatility, historical VaR and drawdown
   -> portfolio_daily_returns
   -> portfolio_daily_risk_summary
@@ -208,6 +200,33 @@ and event date using ingest time and calculation ID. Only dates with every
 configured constituent are emitted. Weights are positive, unique by
 source/symbol and sum to one. Component returns, contributions and calculation
 IDs remain embedded as stable JSON evidence.
+
+### Portfolio warehouse serving
+
+```text
+portfolio curated Parquet
+  -> JSON-aware calculation-ID upserts
+  -> version-preserving portfolio history
+  -> definition- and parameter-aware current views
+  -> portfolio summary and constituent contribution views
+  -> portfolio reconciliation checks
+```
+
+The portfolio tables are:
+
+- `risk_platform.portfolio_daily_returns`
+- `risk_platform.portfolio_daily_risk_summary`
+
+`latest_portfolio_daily_returns` ranks corrections within a portfolio definition,
+event date, model version and weighting method. `latest_portfolio_daily_risk_summary`
+adds volatility and VaR parameters to that grain. The
+`definition_fingerprint` remains part of both grains, so two weight definitions
+using the same human-readable `portfolio_id` stay independently queryable.
+
+`portfolio_risk_semantic_model` exposes current portfolio summaries.
+`portfolio_daily_contribution_model` expands each current return into one row per
+constituent with weight, component return, component calculation ID and
+contribution.
 
 ### Backfill
 
@@ -237,8 +256,9 @@ deploys and never runs `terraform apply`.
 | Time | Aware timestamps only at the canonical event boundary; UTC internally |
 | Identity | Stable source event IDs and deterministic calculation IDs |
 | Replay | Immutable raw data and content-addressed curated files |
-| Versioning | Daily calculation versions are retained rather than overwritten |
+| Versioning | Daily and portfolio calculation versions are retained rather than overwritten |
 | Configuration | YAML for storage, thresholds, symbols, portfolios and operator choices |
+| Evidence | Component IDs, weights, returns and contributions persist as JSONB-ready mappings |
 | Data quality | Required fields, nulls, ranges, late and duplicate evidence |
 | Concurrency | Local partition locks and repository-global lease fencing |
 | Recovery | Resume checkpoints and safe reruns |
@@ -251,8 +271,10 @@ deploys and never runs `terraform apply`.
 | --- | --- |
 | Batch before streaming | Lower operational complexity at the cost of latency |
 | Immutable raw before analytics | Explainable replay, but no table-format transactions |
-| Separate daily and minute semantics | Clear grains and names, with two orchestration paths |
-| Calculation ID as daily warehouse key | Retains corrections and parameter versions |
+| Separate minute, daily and portfolio semantics | Clear grains and names, with explicit orchestration paths |
+| Calculation ID as warehouse version key | Retains corrections and parameter versions |
+| Portfolio definition fingerprint in current grains | Weight configurations do not silently overwrite one another |
+| JSON evidence plus contribution view | Preserves source calculations while enabling row-level attribution queries |
 | PostgreSQL serving | Familiar constraints and views, not a distributed warehouse |
 | Local locks | Simple overlap protection, not distributed coordination |
 | Manual cloud activation | Prevents surprise cost and mutation |
@@ -270,7 +292,10 @@ deploys and never runs `terraform apply`.
 | Q6 | Daily history is insufficient | Emit `partial` rather than implying full readiness |
 | Q7 | A warehouse consumer asks for current daily risk | Return one row per parameterised grain |
 | Q8 | Portfolio constituent dates are incomplete | Exclude the date, report the count and fail if alignment is insufficient |
-| Q9 | Default infrastructure checks run | Validate without deployment or resource creation |
+| Q9 | A portfolio component calculation ID conflicts | Fail rather than make a file-order-dependent choice |
+| Q10 | A portfolio definition or parameter changes | Retain both versions and keep both current grains queryable |
+| Q11 | A consumer asks for portfolio contributions | Return one row per constituent without multiplying portfolio facts |
+| Q12 | Default infrastructure checks run | Validate without deployment or resource creation |
 
 ## 11. Risks And Technical Debt
 
@@ -279,13 +304,13 @@ deploys and never runs `terraform apply`.
 2. Local Parquet is not durable cloud storage or a transactional table format.
 3. Kubernetes storage is ephemeral.
 4. S3, Glue and Kinesis Terraform files remain placeholders.
-5. The default container command runs the minute-oriented demo, not the daily
-   operator sequence.
+5. The default container command runs the minute-oriented demo, not the daily or
+   portfolio operator sequences.
 6. Production scheduling, alerts and dashboards are not implemented.
-7. Portfolio outputs are curated Parquet only; PostgreSQL portfolio serving is
-   not yet implemented.
-8. Marginal risk attribution, covariance matrices, FX conversion, short
-   positions and rebalancing schedules are not implemented.
+7. Marginal VaR, covariance matrices, FX conversion, short positions, leverage,
+   transaction costs and non-daily rebalancing are not implemented.
+8. Portfolio definitions do not yet carry effective-from/to dates; the definition
+   fingerprint distinguishes weight sets but does not model a scheduled mandate.
 9. Exchange-specific trading calendars are not used; daily observations are
    consecutive available closes, not guaranteed calendar-day intervals.
 10. PostgreSQL reconciliation is an explicit local operator step rather than a
@@ -302,7 +327,9 @@ deploys and never runs `terraform apply`.
 | Event time | When the market observation occurred |
 | Ingest time | When the platform accepted the observation |
 | Calculation ID | Deterministic identity of model version, parameters and inputs |
+| Definition fingerprint | Deterministic identity of portfolio constituents, weights and base currency |
 | Current version | Latest ingest/calculation within a declared serving grain |
 | Partial history | Valid output without enough observations for every configured window |
 | Portfolio definition | Long-only source/symbol constituents and weights that sum to one |
+| Contribution | Weight multiplied by the constituent daily return |
 | Human acceptance | Explicit engineer decision after reviewing code and evidence |

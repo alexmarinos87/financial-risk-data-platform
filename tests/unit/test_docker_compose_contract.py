@@ -30,16 +30,25 @@ def test_local_database_seed_mounts_are_read_only() -> None:
     assert services["postgres"]["volumes"] == [
         "./sql/postgres_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro",
         "./sql/postgres_demo_data.sql:/docker-entrypoint-initdb.d/02_demo_data.sql:ro",
+        "./sql/portfolio_schema.sql:/docker-entrypoint-initdb.d/03_portfolio_schema.sql:ro",
     ]
-    assert services["mongo"]["volumes"] == ["./mongo/init:/docker-entrypoint-initdb.d:ro"]
+    assert services["mongo"]["volumes"] == [
+        "./mongo/init:/docker-entrypoint-initdb.d:ro"
+    ]
 
 
 def test_local_database_services_have_healthchecks() -> None:
     services = _load_compose()["services"]
 
-    assert "pg_isready -U risk_user -d risk_platform" in services["postgres"]["healthcheck"]["test"]
+    assert (
+        "pg_isready -U risk_user -d risk_platform"
+        in services["postgres"]["healthcheck"]["test"]
+    )
     assert services["mongo"]["healthcheck"]["test"][0] == "CMD-SHELL"
-    assert "db.adminCommand({ ping: 1 }).ok" in services["mongo"]["healthcheck"]["test"][1]
+    assert (
+        "db.adminCommand({ ping: 1 }).ok"
+        in services["mongo"]["healthcheck"]["test"][1]
+    )
 
 
 def test_postgres_uses_demo_only_credentials() -> None:
