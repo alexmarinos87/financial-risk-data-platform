@@ -13,7 +13,7 @@ grains and interview-ready engineering evidence.
 1. Ingests market data and external signals.
 2. Validates schemas, normalises symbols and deduplicates events.
 3. Retains immutable, partitioned raw Parquet for replay.
-4. Builds minute-oriented, single-symbol daily and portfolio risk analytics.
+4. Builds minute-oriented, single-symbol daily, portfolio and attribution analytics.
 5. Stores curated Parquet and serves versioned outputs through PostgreSQL views.
 
 ## Quickstart
@@ -213,6 +213,60 @@ weight sets using the same portfolio name therefore remain independently
 queryable. See `docs/portfolio-risk.md` for alignment, weighting, versioning,
 serving and reconciliation details.
 
+## Portfolio Covariance And Attribution Path
+
+After portfolio returns exist, calculate one bounded latest-window covariance and
+volatility-attribution snapshot without another provider request:
+
+```bash
+make portfolio-attribution-demo \
+  PORTFOLIO_ID=us-tech-equal \
+  END_DATE=2026-03-31 \
+  COVARIANCE_WINDOW=20
+```
+
+The snapshot stores annualised sample covariance, Pearson correlation,
+constituent volatility, marginal volatility contribution, Euler component
+contribution and contribution shares in:
+
+```text
+data/curated/portfolio_risk_attribution
+```
+
+Inspect, load and reconcile the attribution warehouse contract:
+
+```bash
+make portfolio-attribution-warehouse-dry-run
+make local-db-up
+make portfolio-attribution-warehouse-load
+make check-portfolio-attribution-consistency
+```
+
+PostgreSQL retains every snapshot in:
+
+```text
+risk_platform.portfolio_risk_attribution
+```
+
+Current and row-level reporting contracts are:
+
+```text
+risk_platform.latest_portfolio_risk_attribution
+risk_platform.portfolio_attribution_semantic_model
+risk_platform.portfolio_covariance_model
+risk_platform.portfolio_correlation_model
+risk_platform.portfolio_volatility_contribution_model
+```
+
+The current grain preserves the portfolio definition, event date, model,
+weighting method, covariance and correlation methods, covariance window and
+annualisation basis. Matrix views expose one ordered constituent pair per row;
+the volatility-contribution view exposes one constituent per row. Undefined
+zero-variance correlations remain SQL `NULL`, not non-standard `NaN`.
+
+See `docs/portfolio-attribution.md` for formulas, version selection, JSON
+evidence, warehouse constraints and reconciliation.
+
 ## Data Sources
 
 The implemented external market source is Alpha Vantage daily time series. The
@@ -232,24 +286,25 @@ Additional preparation and operating notes:
 1. `docs/demo-script.md` for a short technical walkthrough
 2. `docs/daily-risk-pipeline.md` for the real daily source-to-serving path
 3. `docs/portfolio-risk.md` for multi-symbol portfolio analytics and serving
-4. `docs/preparation-plan.md` for interview preparation
-5. `docs/interview-stories.md` for interview story rehearsal
-6. `docs/mock-interview.md` for timed interview practice
-7. `docs/elt-mapping.md` for connector-based ELT mapping
-8. `docs/source-document-mapping.md` for nested source document flattening
-9. `docs/postgres-mongodb-walkthrough.md` for local source-to-warehouse inspection
-10. `docs/data-consistency-walkthrough.md` for source-to-warehouse reconciliation
-11. `docs/aws-managed-databases.md` for disabled-by-default database IaC
-12. `docs/lambda-s3-orchestration.md` for AWS orchestration mapping
-13. `sql/postgres_schema.sql` and `sql/ops_queries.sql` for warehouse examples
-14. `docs/agentic-workflows.md` for larger delegated development workflows
-15. `docs/engineering-delivery-workflow.md` for the controlled agent loop
-16. `docs/agent-roles.md` for splitting work across bounded roles
-17. `docs/overnight-sandbox.md` for safe unattended validation runs
-18. `docs/overnight-development.md` for guarded candidate-branch controls
-19. `docs/security-protocols.md` for local and cloud safety controls
-20. `docs/operational-runbook.md` for local failure investigation
-21. `docs/iteration-loop.md` and `docs/iteration-backlog.md` for continued iterations
+4. `docs/portfolio-attribution.md` for covariance and component-risk attribution
+5. `docs/preparation-plan.md` for interview preparation
+6. `docs/interview-stories.md` for interview story rehearsal
+7. `docs/mock-interview.md` for timed interview practice
+8. `docs/elt-mapping.md` for connector-based ELT mapping
+9. `docs/source-document-mapping.md` for nested source document flattening
+10. `docs/postgres-mongodb-walkthrough.md` for local source-to-warehouse inspection
+11. `docs/data-consistency-walkthrough.md` for source-to-warehouse reconciliation
+12. `docs/aws-managed-databases.md` for disabled-by-default database IaC
+13. `docs/lambda-s3-orchestration.md` for AWS orchestration mapping
+14. `sql/postgres_schema.sql` and `sql/ops_queries.sql` for warehouse examples
+15. `docs/agentic-workflows.md` for larger delegated development workflows
+16. `docs/engineering-delivery-workflow.md` for the controlled agent loop
+17. `docs/agent-roles.md` for splitting work across bounded roles
+18. `docs/overnight-sandbox.md` for safe unattended validation runs
+19. `docs/overnight-development.md` for guarded candidate-branch controls
+20. `docs/security-protocols.md` for local and cloud safety controls
+21. `docs/operational-runbook.md` for local failure investigation
+22. `docs/iteration-loop.md` and `docs/iteration-backlog.md` for continued iterations
 
 ## Local Database Playground
 
@@ -272,13 +327,16 @@ flow. The PostgreSQL serving layer includes:
 symbol_dimension_history -> current_symbol_dimension -> finance_risk_semantic_model
                                                   \-> daily_risk_semantic_model
 portfolio_daily_returns -> portfolio_daily_risk_summary
-                         -> portfolio current and contribution views
+                         -> portfolio current and return-contribution views
+portfolio_risk_attribution
+  -> current attribution
+  -> covariance / correlation / volatility-contribution views
 ```
 
 The original semantic view demonstrates SCD Type 2 enrichment for the
 minute-oriented demo. The daily view preserves model versions and performs a
-source-aware dimension join. Portfolio views preserve definition and parameter
-versions and expose constituent-level contributions.
+source-aware dimension join. Portfolio and attribution views preserve definition
+and parameter versions while exposing queryable constituent grains.
 
 ## Performance Benchmark
 

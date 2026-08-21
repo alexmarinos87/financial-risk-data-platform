@@ -27,10 +27,12 @@ current daily-return versions
   -> complete-date alignment
   -> versioned portfolio returns and risk summaries
   -> version-preserving PostgreSQL tables
-  -> current-version, semantic and contribution views
+  -> current-version, semantic and return-contribution views
   -> latest-window covariance and correlation
   -> Euler component-volatility attribution
   -> versioned portfolio_risk_attribution Parquet
+  -> version-preserving PostgreSQL attribution snapshots
+  -> current matrix and volatility-contribution views
 ```
 
 The leading quality goals are:
@@ -38,8 +40,8 @@ The leading quality goals are:
 | Priority | Quality goal | Evidence |
 | --- | --- | --- |
 | 1 | Deterministic replay | Stable event IDs, content-addressed Parquet and calculation IDs |
-| 2 | Explicit contracts | Pydantic schemas, dataset grains, SQL constraints and loader specs |
-| 3 | Source-to-serving traceability | Lineage, input fingerprints, JSON evidence and reconciliation SQL |
+| 2 | Explicit contracts | Pydantic schemas, dataset grains, SQL constraints and loader contracts |
+| 3 | Source-to-serving traceability | Input fingerprints, JSONB evidence, views and reconciliation SQL |
 | 4 | Safe operation | Local-first commands, bounded scans, manual deployment and security checks |
 | 5 | Reviewable evolution | Arc42 change blocks, focused tests, CI and squash-merged PRs |
 
@@ -102,11 +104,12 @@ The data plane is split into:
 3. **Analytics** — minute metrics, daily risk, portfolio aggregation, covariance,
    volatility attribution and data quality.
 4. **Storage** — bounded, idempotent raw and curated Parquet publication.
-5. **Orchestration** — sequencing, locks, backfills and summaries.
-6. **Warehouse** — PostgreSQL loading, version retention, views and checks.
+5. **Orchestration** — sequencing, locks, backfills and run summaries.
+6. **Warehouse** — PostgreSQL loading, version retention, row-expansion views and
+   reconciliation.
 
-Minute, single-symbol daily and portfolio semantics stay separate. Daily,
-portfolio and attribution calculations use explicit model versions and
+Minute, single-symbol daily, portfolio and attribution semantics stay separate.
+Daily, portfolio and attribution calculations use explicit model versions and
 deterministic calculation IDs so late source history, changed parameters,
 changed weights or changed covariance windows create new traceable versions
 without overwriting earlier evidence.
@@ -118,10 +121,10 @@ without overwriting earlier evidence.
 | `common` | Configuration, time, logging and exceptions | `src/common/` |
 | `ingestion` | Alpha Vantage and provider-neutral inbound contracts | `src/ingestion/` |
 | `processing` | Validation, normalisation, deduplication and windowing | `src/processing/` |
-| `analytics` | Returns, volatility, VaR, drawdown, covariance, portfolio aggregation, attribution and quality | `src/analytics/` |
+| `analytics` | Returns, VaR, drawdown, covariance, aggregation, attribution and quality | `src/analytics/` |
 | `storage` | Dataset configuration and local Parquet publication | `src/storage/`, `config/storage.yaml` |
-| `orchestration` | Demo pipeline, daily risk, portfolio risk, attribution, locks and backfills | `src/orchestration/` |
-| `warehouse` | Loader specs, SQL schema, current views and reconciliation | `src/warehouse/`, `sql/` |
+| `orchestration` | Demo, daily, portfolio and attribution runners plus locks and backfills | `src/orchestration/` |
+| `warehouse` | Loaders, SQL schemas, current views and reconciliation | `src/warehouse/`, `sql/` |
 | `source-systems` | Local PostgreSQL and MongoDB examples | `docker-compose.yml`, `mongo/` |
 | `deployment` | Image, Kubernetes and Terraform scaffold | `Dockerfile`, `deploy/`, `infra/` |
 | `engineering-controls` | CI, security checks and review evidence | `.github/`, `scripts/`, `AGENTS.md` |
@@ -206,27 +209,6 @@ configured constituent are emitted. Weights are positive, unique by
 source/symbol and sum to one. Component returns, contributions and calculation
 IDs remain embedded as stable JSON evidence.
 
-### Portfolio covariance and volatility attribution
-
-```text
-current portfolio_daily_returns versions
-  -> selected portfolio definition fingerprint
-  -> bounded latest covariance window
-  -> annualised sample covariance
-  -> Pearson correlation
-  -> Euler component contributions to portfolio volatility
-  -> portfolio_risk_attribution
-```
-
-The attribution path validates the persisted portfolio-return evidence against
-the selected definition, ranks corrections by ingest time and calculation ID,
-and requires the full configured window. It writes one latest-window snapshot
-that contains JSON covariance and correlation matrices plus constituent
-volatility, marginal contribution, component contribution and contribution-share
-mappings. Undefined zero-variance correlations are stored as JSON `null`, never
-non-standard `NaN`. Component contributions reconcile to total portfolio
-volatility within a strict numerical tolerance.
-
 ### Portfolio warehouse serving
 
 ```text
@@ -234,7 +216,7 @@ portfolio curated Parquet
   -> JSON-aware calculation-ID upserts
   -> version-preserving portfolio history
   -> definition- and parameter-aware current views
-  -> portfolio summary and constituent contribution views
+  -> portfolio summary and constituent return-contribution views
   -> portfolio reconciliation checks
 ```
 
@@ -252,9 +234,56 @@ queryable.
 
 `portfolio_risk_semantic_model` exposes current portfolio summaries.
 `portfolio_daily_contribution_model` expands each current return into one row per
-constituent with weight, component return, component calculation ID and
-contribution. Attribution remains curated Parquet in the current increment; its
-warehouse serving contract is a separate change.
+constituent with weight, component return, component calculation ID and return
+contribution.
+
+### Portfolio covariance and volatility attribution
+
+```text
+current portfolio_daily_returns versions
+  -> selected portfolio definition fingerprint
+  -> bounded latest covariance window
+  -> annualised sample covariance
+  -> Pearson correlation
+  -> Euler component contributions to portfolio volatility
+  -> portfolio_risk_attribution
+```
+
+The attribution path validates the persisted portfolio-return evidence against
+the selected definition, ranks corrections by ingest time and calculation ID,
+and requires the full configured window. It writes one latest-window snapshot
+that contains covariance and correlation matrices plus constituent volatility,
+marginal contribution, component contribution and contribution-share mappings.
+Undefined zero-variance correlations are stored as JSON `null`, never
+non-standard `NaN`. Component contributions reconcile to total portfolio
+volatility within a strict numerical tolerance.
+
+### Attribution warehouse serving
+
+```text
+portfolio_risk_attribution Parquet
+  -> bounded JSON-aware calculation-ID upsert
+  -> risk_platform.portfolio_risk_attribution history
+  -> latest_portfolio_risk_attribution
+  -> portfolio_attribution_semantic_model
+  -> portfolio_covariance_model
+  -> portfolio_correlation_model
+  -> portfolio_volatility_contribution_model
+  -> attribution reconciliation checks
+```
+
+The base table preserves every deterministic snapshot. The current grain includes
+the portfolio definition, event date, model and weighting method, covariance and
+correlation methods, covariance window and annualisation basis. Within the grain,
+`ts_ingest DESC, calculation_id DESC` selects the current version.
+
+The matrix views expose one row per ordered constituent pair. The contribution
+view exposes one row per constituent without recalculating covariance or
+volatility. `portfolio-attribution-warehouse-load` first loads prerequisite
+portfolio-return facts and then the attribution snapshot.
+`check-portfolio-attribution-consistency` verifies input references, matrix
+shape and symmetry, correlation null semantics, variance/volatility identity and
+Euler reconciliation.
 
 ### Backfill
 
@@ -286,7 +315,8 @@ deploys and never runs `terraform apply`.
 | Replay | Immutable raw data and content-addressed curated files |
 | Versioning | Daily, portfolio and attribution versions are retained rather than overwritten |
 | Configuration | YAML for storage, thresholds, symbols, portfolios and operator choices |
-| Evidence | Component IDs, weights, returns, covariance and contributions persist as JSON-ready mappings |
+| Evidence | Component IDs, weights, returns, matrices and contributions persist as JSONB-ready mappings |
+| Serving | JSON history remains intact while SQL views expose queryable row grains |
 | Data quality | Required fields, nulls, ranges, late and duplicate evidence |
 | Concurrency | Local partition locks and repository-global lease fencing |
 | Recovery | Resume checkpoints and safe reruns |
@@ -299,12 +329,12 @@ deploys and never runs `terraform apply`.
 | --- | --- |
 | Batch before streaming | Lower operational complexity at the cost of latency |
 | Immutable raw before analytics | Explainable replay, but no table-format transactions |
-| Separate minute, daily and portfolio semantics | Clear grains and names, with explicit orchestration paths |
-| Calculation ID as warehouse version key | Retains corrections and parameter versions |
+| Separate minute, daily, portfolio and attribution semantics | Clear grains and explicit orchestration paths |
+| Calculation ID as warehouse version key | Retains corrections, definitions and parameter versions |
 | Portfolio definition fingerprint in current grains | Weight configurations do not silently overwrite one another |
-| JSON evidence plus contribution view | Preserves source calculations while enabling row-level attribution queries |
+| JSONB evidence plus row-expansion views | Preserves deterministic documents while enabling SQL analysis |
 | Latest-window attribution snapshot | Bounded output and simple replay, but not a full historical matrix series |
-| Sample covariance and Euler volatility contribution | Transparent risk decomposition without a factor or shrinkage model |
+| Sample covariance and Euler volatility contribution | Transparent decomposition without a factor or shrinkage model |
 | PostgreSQL serving | Familiar constraints and views, not a distributed warehouse |
 | Local locks | Simple overlap protection, not distributed coordination |
 | Manual cloud activation | Prevents surprise cost and mutation |
@@ -324,11 +354,13 @@ deploys and never runs `terraform apply`.
 | Q8 | Portfolio constituent dates are incomplete | Exclude the date, report the count and fail if alignment is insufficient |
 | Q9 | A portfolio component calculation ID conflicts | Fail rather than make a file-order-dependent choice |
 | Q10 | A portfolio definition or parameter changes | Retain both versions and keep both current grains queryable |
-| Q11 | A consumer asks for portfolio contributions | Return one row per constituent without multiplying portfolio facts |
+| Q11 | A consumer asks for portfolio return contributions | Return one row per constituent without multiplying facts |
 | Q12 | A portfolio covariance window is incomplete | Fail without publishing a partial attribution snapshot |
 | Q13 | A zero-variance constituent has undefined correlation | Persist JSON nulls and explicit status, not NaN |
 | Q14 | Component volatility contributions are calculated | Reconcile their sum to portfolio volatility |
-| Q15 | Default infrastructure checks run | Validate without deployment or resource creation |
+| Q15 | An attribution correction is loaded | Retain history and select the newest row in its declared grain |
+| Q16 | A consumer queries a matrix or attribution vector | Return one row per pair or constituent with no analytical recomputation |
+| Q17 | Default infrastructure checks run | Validate without deployment or resource creation |
 
 ## 11. Risks And Technical Debt
 
@@ -340,8 +372,8 @@ deploys and never runs `terraform apply`.
 5. The default container command runs the minute-oriented demo, not the daily,
    portfolio or attribution operator sequences.
 6. Production scheduling, alerts and dashboards are not implemented.
-7. Attribution is a latest-window curated snapshot only; historical snapshots and
-   PostgreSQL attribution serving are not implemented.
+7. Attribution is a latest-window snapshot only; historical snapshots for every
+   event date are not calculated.
 8. Shrinkage, exponentially weighted and factor covariance estimators, marginal
    VaR, FX conversion, short positions, leverage, transaction costs and
    non-daily rebalancing are not implemented.
@@ -369,5 +401,6 @@ deploys and never runs `terraform apply`.
 | Portfolio definition | Long-only source/symbol constituents and weights that sum to one |
 | Return contribution | Weight multiplied by the constituent daily return |
 | Covariance window | Latest current portfolio-return observations used to estimate the matrix |
+| Attribution snapshot | One retained covariance, correlation and volatility-decomposition calculation |
 | Component volatility contribution | Euler allocation of portfolio volatility to one constituent |
 | Human acceptance | Explicit engineer decision after reviewing code and evidence |

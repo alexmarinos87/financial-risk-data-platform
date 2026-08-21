@@ -31,6 +31,10 @@ def test_local_database_seed_mounts_are_read_only() -> None:
         "./sql/postgres_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro",
         "./sql/postgres_demo_data.sql:/docker-entrypoint-initdb.d/02_demo_data.sql:ro",
         "./sql/portfolio_schema.sql:/docker-entrypoint-initdb.d/03_portfolio_schema.sql:ro",
+        (
+            "./sql/portfolio_attribution_schema.sql:"
+            "/docker-entrypoint-initdb.d/04_portfolio_attribution_schema.sql:ro"
+        ),
     ]
     assert services["mongo"]["volumes"] == [
         "./mongo/init:/docker-entrypoint-initdb.d:ro"
