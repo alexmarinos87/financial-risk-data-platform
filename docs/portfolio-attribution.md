@@ -2,14 +2,14 @@
 
 ## Outcome
 
-This path turns retained portfolio daily returns into one deterministic
-risk-attribution snapshot for a configured portfolio definition and serves every
-retained snapshot through PostgreSQL:
+This path turns retained portfolio daily returns into deterministic covariance,
+correlation and Euler volatility-attribution snapshots and serves every retained
+version through PostgreSQL:
 
 ```text
 current portfolio_daily_returns versions
   -> exact definition-fingerprint selection
-  -> bounded covariance window
+  -> complete rolling covariance windows
   -> annualised sample covariance matrix
   -> Pearson correlation matrix
   -> Euler component contributions to portfolio volatility
@@ -18,15 +18,21 @@ current portfolio_daily_returns versions
   -> current covariance, correlation and contribution views
 ```
 
-The pure calculation is owned by
-`src/analytics/portfolio_attribution.py`. The local runner is
-`src/orchestration/run_portfolio_attribution.py`. The warehouse schema is
-`sql/portfolio_attribution_schema.sql`, and the dedicated loader is
-`src/warehouse/portfolio_attribution_loader.py`.
+The latest-snapshot calculation is owned by
+`src/analytics/portfolio_attribution.py`. Rolling historical attribution is
+owned by `src/analytics/portfolio_attribution_history.py`. The runners are:
+
+```text
+src/orchestration/run_portfolio_attribution.py
+src/orchestration/run_portfolio_attribution_history.py
+```
+
+The warehouse schema is `sql/portfolio_attribution_schema.sql`, and the dedicated
+loader is `src/warehouse/portfolio_attribution_loader.py`.
 
 ## Operator Flow
 
-Generate the constituent and portfolio history first:
+Generate constituent and portfolio history first:
 
 ```bash
 export ALPHA_VANTAGE_API_KEY='set-locally-do-not-commit'
@@ -38,7 +44,9 @@ make portfolio-risk-demo \
   END_DATE=2026-03-31
 ```
 
-Calculate the latest attribution snapshot without another provider request:
+### Latest snapshot
+
+Calculate only the latest complete window:
 
 ```bash
 make portfolio-attribution-demo \
@@ -47,36 +55,42 @@ make portfolio-attribution-demo \
   COVARIANCE_WINDOW=20
 ```
 
-The credential-free run summary is written to
-`.demo/portfolio-attribution-summary.json`. The curated snapshot is written under
-`data/curated/portfolio_risk_attribution`.
+The summary is written to `.demo/portfolio-attribution-summary.json`.
 
-Inspect the attribution warehouse batch without connecting to PostgreSQL:
+### Rolling history
 
-```bash
-make portfolio-attribution-warehouse-dry-run
-```
-
-Load the prerequisite daily and portfolio calculations, load attribution, and
-run the focused reconciliation checks:
+Calculate one snapshot for every eligible window end date:
 
 ```bash
-make local-db-up
-make portfolio-attribution-warehouse-load
-make check-portfolio-attribution-consistency
+make portfolio-attribution-history-demo \
+  PORTFOLIO_ID=us-tech-equal \
+  START_DATE=2026-01-01 \
+  END_DATE=2026-03-31 \
+  COVARIANCE_WINDOW=20
 ```
 
-`portfolio-attribution-warehouse-load` reapplies the core, portfolio and
-attribution schemas, loads the prerequisite warehouse facts, and then loads the
-attribution snapshot. This allows an already-running local database to receive
-the new objects without recreating its Docker volume.
+`START_DATE` filters emitted snapshot dates. Earlier current portfolio returns are
+still retained as calculation context so the first selected date can use its full
+covariance window. Omitting `START_DATE` emits every complete window no later than
+`END_DATE`.
+
+The rolling command writes a credential-free summary to
+`.demo/portfolio-attribution-history-summary.json`. Both commands publish to:
+
+```text
+data/curated/portfolio_risk_attribution
+```
+
+The history command is bounded by `MAX_HISTORY_SNAPSHOTS = 2_500`. A larger
+request fails before publication and should be split into date ranges. Each
+snapshot is published independently, so a partial local failure is replay-safe.
 
 ## Input Version Selection
 
 `portfolio_daily_returns` can retain several calculations for one portfolio
-definition and event date after an upstream component correction. The attribution
-runner filters to the fingerprint produced by the selected entry in
-`config/portfolios.yaml`, then chooses the current row for each event date by:
+definition and event date after an upstream correction. Both attribution paths
+filter to the fingerprint produced by the selected entry in
+`config/portfolios.yaml`, then choose the current row for each event date by:
 
 ```text
 ts_ingest DESC
@@ -94,10 +108,15 @@ Every selected record is checked against the configured definition:
 - component calculation IDs and finite component returns; and
 - persisted portfolio return equal to the weighted component returns.
 
+Historical snapshots are recalculated from the **current** version of each
+portfolio-return date. A late correction therefore creates new deterministic
+snapshot versions for every affected rolling window while preserving the earlier
+warehouse rows.
+
 ## Covariance And Correlation
 
-For a window of aligned constituent-return vectors `r_t`, the calculation uses
-the sample covariance matrix:
+For a complete window of aligned constituent-return vectors `r_t`, the
+calculation uses:
 
 ```text
 Sigma_daily = sample_covariance(r_t)
@@ -108,7 +127,7 @@ The persisted covariance matrix is annualised. Correlation is the ordinary
 Pearson correlation matrix calculated over the same observations.
 
 A zero-variance constituent makes its correlations undefined. Those cells are
-persisted as JSON `null` rather than non-standard `NaN`, and the snapshot records:
+persisted as JSON `null`, not non-standard `NaN`, and the snapshot records:
 
 ```text
 correlation_status = undefined_zero_variance
@@ -151,27 +170,28 @@ values are explicitly set to zero and `volatility_status` is `zero`.
 
 ```text
 portfolio definition fingerprint
-+ requested end date/current final event date
++ snapshot event date
 + covariance window
 + attribution model version
-+ weighting method
++ weighting, covariance and correlation methods
++ ordered current portfolio-return calculation IDs
 ```
 
-The row includes:
+Each row includes:
 
 - `portfolio-attribution-v1` and a deterministic calculation ID;
-- the selected window boundaries and ordered portfolio-return calculation IDs;
+- selected window boundaries and ordered input calculation IDs;
 - weights and annualised constituent volatilities;
-- annualised covariance and correlation matrices;
+- annualised covariance and Pearson correlation matrices;
 - marginal and component volatility contributions;
 - contribution shares;
 - annualised portfolio variance and volatility; and
 - correlation, zero-volatility and Euler-reconciliation evidence.
 
-The deterministic calculation ID binds the definition fingerprint, weighting
-method, covariance window, annualisation basis and ordered current input
-calculation IDs. Replaying the same state writes no duplicate Parquet record. An
-upstream correction, weight change or window change produces a distinct version.
+The deterministic calculation ID binds the definition fingerprint, methods,
+covariance window, annualisation basis and ordered current input IDs. Replaying
+the same state writes no duplicate Parquet record. A correction, definition
+change or window change produces a distinguishable version.
 
 ## PostgreSQL Serving Contract
 
@@ -182,10 +202,10 @@ risk_platform.portfolio_risk_attribution
 ```
 
 `calculation_id` is the primary and loader conflict key. Replaying an identical
-snapshot converges on one stored row. A corrected input, changed definition or
-changed covariance window remains a distinct retained version.
+snapshot converges on one stored row. Rolling history requires no schema change:
+`ts_event` already belongs to the current-version grain.
 
-The current-version grain is:
+The current grain is:
 
 ```text
 portfolio_id
@@ -206,14 +226,13 @@ version through:
 risk_platform.latest_portfolio_risk_attribution
 ```
 
-The scalar and JSON snapshot contract is exposed through:
+The complete current snapshot is exposed through:
 
 ```text
 risk_platform.portfolio_attribution_semantic_model
 ```
 
-The matrices and contribution vectors are expanded without recalculating the
-analytics:
+Matrices and contribution vectors are expanded without recalculation:
 
 ```text
 risk_platform.portfolio_covariance_model
@@ -221,49 +240,66 @@ risk_platform.portfolio_correlation_model
 risk_platform.portfolio_volatility_contribution_model
 ```
 
-`portfolio_covariance_model` and `portfolio_correlation_model` expose one row per
-ordered constituent pair. Undefined correlation cells remain SQL `NULL`.
-`portfolio_volatility_contribution_model` exposes one row per constituent with
-its weight, annualised standalone volatility, marginal contribution, component
-contribution and contribution share.
+The matrix views expose one row per ordered constituent pair. Undefined
+correlation cells remain SQL `NULL`. The contribution view exposes one row per
+constituent with weight, annualised standalone volatility, marginal contribution,
+Euler component contribution and contribution share.
 
-## Reconciliation Evidence
+## Warehouse Operation And Reconciliation
+
+Inspect the attribution batch without connecting to PostgreSQL:
+
+```bash
+make portfolio-attribution-warehouse-dry-run
+```
+
+Load prerequisites, attribution history and reconciliation evidence:
+
+```bash
+make local-db-up
+make portfolio-attribution-warehouse-load
+make check-portfolio-attribution-consistency
+```
+
+`portfolio-attribution-warehouse-load` reapplies the core, portfolio and
+attribution schemas, loads prerequisite facts, then loads all retained attribution
+snapshots.
 
 `sql/portfolio_attribution_consistency_checks.sql` verifies:
 
-- every retained input calculation ID references a portfolio-return row;
-- the current attribution snapshot uses current portfolio-return versions;
+- every retained input ID references a portfolio-return row;
+- current attribution uses current portfolio-return versions;
 - input IDs, window boundaries and definition metadata align;
 - JSON vector and matrix keys match the declared constituents;
-- portfolio weights sum to one;
+- weights sum to one;
 - covariance is symmetric with non-negative diagonals;
 - correlation is symmetric, bounded and has the declared null count;
 - squared portfolio volatility matches portfolio variance;
 - Euler component contributions and shares reconcile;
 - calculation IDs and current grains remain unique;
 - the latest view selects the newest candidate; and
-- semantic, matrix and contribution views have the expected row counts.
+- semantic, matrix and contribution views have expected row counts.
 
 ## Safety Bounds
 
-The analytics reader:
+The analytics readers:
 
-- accepts only `portfolio_daily_returns` from the configured curated base path;
-- filters to one portfolio ID, definition fingerprint and completed end date;
-- rejects symbolic-link paths and non-regular Parquet files;
-- caps the scan at 4,096 files, 1 GB and 250,000 matching rows;
-- requires exact portfolio-return fields; and
-- performs no provider request.
+- accept only `portfolio_daily_returns` from the configured curated base path;
+- filter to one portfolio ID, definition fingerprint and completed end date;
+- reject symbolic-link paths and non-regular Parquet files;
+- cap the scan at 4,096 files, 1 GB and 250,000 matching rows;
+- require exact portfolio-return fields;
+- cap one history request at 2,500 snapshots; and
+- perform no provider request.
 
-The warehouse loader applies the same file, byte and row limits to
-`portfolio_risk_attribution`, rejects unsafe local paths, converts only the
-declared JSON evidence fields to JSONB, and performs no analytical
-recalculation.
+The warehouse loader applies equivalent file, byte and row limits to
+`portfolio_risk_attribution`, converts only declared evidence fields to JSONB,
+and performs no analytical recalculation.
 
 ## Current Boundary
 
-This path stores one latest-window snapshot per explicit calculation identity. It
-does not yet calculate historical attribution snapshots for every event date,
-shrinkage or exponentially weighted covariance estimators, factor models,
-marginal VaR, FX conversion, leverage, short positions, transaction costs,
-scheduled rebalancing, production scheduling, dashboards or alert delivery.
+This path implements current-version rolling historical attribution with sample
+covariance and Euler volatility allocation. It does not implement shrinkage or
+exponentially weighted covariance estimators, factor models, marginal VaR, FX
+conversion, leverage, short positions, transaction costs, scheduled rebalancing,
+production scheduling, dashboards or alert delivery.
