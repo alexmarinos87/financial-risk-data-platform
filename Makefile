@@ -15,7 +15,7 @@ VAR_WINDOW ?= 60
 VAR_CONFIDENCE ?= 0.95
 COVARIANCE_WINDOW ?= 20
 
-.PHONY: setup lint type-check test dependency-check format benchmark-io docker-build k8s-render-dev k8s-render-prod k8s-check terraform-check infrastructure-check quality-check iteration-check clean-generated security-check readiness-check sandbox-once overnight-sandbox morning-review daily-risk-demo portfolio-risk-demo portfolio-attribution-demo warehouse-schema daily-risk-warehouse-dry-run daily-risk-warehouse-load check-daily-risk-consistency portfolio-risk-warehouse-dry-run portfolio-risk-warehouse-load check-portfolio-risk-consistency local-db-up local-db-down local-db-wait local-db-logs postgres-shell mongo-shell run-demo load-postgres-demo load-postgres-dry-run check-postgres-consistency consistency-demo
+.PHONY: setup lint type-check test dependency-check format benchmark-io docker-build k8s-render-dev k8s-render-prod k8s-check terraform-check infrastructure-check quality-check iteration-check clean-generated security-check readiness-check sandbox-once overnight-sandbox morning-review daily-risk-demo portfolio-risk-demo portfolio-attribution-demo warehouse-schema daily-risk-warehouse-dry-run daily-risk-warehouse-load check-daily-risk-consistency portfolio-risk-warehouse-dry-run portfolio-risk-warehouse-load check-portfolio-risk-consistency portfolio-attribution-warehouse-dry-run portfolio-attribution-warehouse-load check-portfolio-attribution-consistency local-db-up local-db-down local-db-wait local-db-logs postgres-shell mongo-shell run-demo load-postgres-demo load-postgres-dry-run check-postgres-consistency consistency-demo
 
 setup:
 	python3 -m venv .venv
@@ -142,6 +142,8 @@ warehouse-schema: local-db-wait
 		< sql/postgres_schema.sql
 	docker compose exec -T postgres psql -U risk_user -d risk_platform \
 		< sql/portfolio_schema.sql
+	docker compose exec -T postgres psql -U risk_user -d risk_platform \
+		< sql/portfolio_attribution_schema.sql
 
 daily-risk-warehouse-dry-run:
 	$(PYTHON) -m src.warehouse.postgres_loader --dry-run
@@ -162,6 +164,18 @@ portfolio-risk-warehouse-load: warehouse-schema
 check-portfolio-risk-consistency:
 	docker compose exec -T postgres psql -U risk_user -d risk_platform \
 		< sql/portfolio_risk_consistency_checks.sql
+
+portfolio-attribution-warehouse-dry-run:
+	$(PYTHON) -m src.warehouse.portfolio_attribution_loader --dry-run
+
+portfolio-attribution-warehouse-load: warehouse-schema
+	$(PYTHON) -m src.warehouse.postgres_loader --dsn "$(LOCAL_POSTGRES_DSN)"
+	$(PYTHON) -m src.warehouse.portfolio_attribution_loader \
+		--dsn "$(LOCAL_POSTGRES_DSN)"
+
+check-portfolio-attribution-consistency:
+	docker compose exec -T postgres psql -U risk_user -d risk_platform \
+		< sql/portfolio_attribution_consistency_checks.sql
 
 local-db-up:
 	docker compose up -d postgres mongo

@@ -2,8 +2,9 @@
 
 ## Outcome
 
-This increment turns retained portfolio daily returns into one deterministic
-risk-attribution snapshot for a configured portfolio definition:
+This path turns retained portfolio daily returns into one deterministic
+risk-attribution snapshot for a configured portfolio definition and serves every
+retained snapshot through PostgreSQL:
 
 ```text
 current portfolio_daily_returns versions
@@ -13,11 +14,15 @@ current portfolio_daily_returns versions
   -> Pearson correlation matrix
   -> Euler component contributions to portfolio volatility
   -> versioned portfolio_risk_attribution Parquet
+  -> version-preserving PostgreSQL history
+  -> current covariance, correlation and contribution views
 ```
 
 The pure calculation is owned by
 `src/analytics/portfolio_attribution.py`. The local runner is
-`src/orchestration/run_portfolio_attribution.py`.
+`src/orchestration/run_portfolio_attribution.py`. The warehouse schema is
+`sql/portfolio_attribution_schema.sql`, and the dedicated loader is
+`src/warehouse/portfolio_attribution_loader.py`.
 
 ## Operator Flow
 
@@ -33,7 +38,7 @@ make portfolio-risk-demo \
   END_DATE=2026-03-31
 ```
 
-Then calculate the latest attribution snapshot without another provider request:
+Calculate the latest attribution snapshot without another provider request:
 
 ```bash
 make portfolio-attribution-demo \
@@ -45,6 +50,26 @@ make portfolio-attribution-demo \
 The credential-free run summary is written to
 `.demo/portfolio-attribution-summary.json`. The curated snapshot is written under
 `data/curated/portfolio_risk_attribution`.
+
+Inspect the attribution warehouse batch without connecting to PostgreSQL:
+
+```bash
+make portfolio-attribution-warehouse-dry-run
+```
+
+Load the prerequisite daily and portfolio calculations, load attribution, and
+run the focused reconciliation checks:
+
+```bash
+make local-db-up
+make portfolio-attribution-warehouse-load
+make check-portfolio-attribution-consistency
+```
+
+`portfolio-attribution-warehouse-load` reapplies the core, portfolio and
+attribution schemas, loads the prerequisite warehouse facts, and then loads the
+attribution snapshot. This allows an already-running local database to receive
+the new objects without recreating its Docker volume.
 
 ## Input Version Selection
 
@@ -120,7 +145,7 @@ have a negative component contribution.
 When portfolio volatility is numerically zero, all marginal, component and share
 values are explicitly set to zero and `volatility_status` is `zero`.
 
-## Dataset Grain
+## Curated Dataset Grain
 
 `portfolio_risk_attribution` contains one row for:
 
@@ -148,9 +173,80 @@ method, covariance window, annualisation basis and ordered current input
 calculation IDs. Replaying the same state writes no duplicate Parquet record. An
 upstream correction, weight change or window change produces a distinct version.
 
+## PostgreSQL Serving Contract
+
+The warehouse retains every calculation in:
+
+```text
+risk_platform.portfolio_risk_attribution
+```
+
+`calculation_id` is the primary and loader conflict key. Replaying an identical
+snapshot converges on one stored row. A corrected input, changed definition or
+changed covariance window remains a distinct retained version.
+
+The current-version grain is:
+
+```text
+portfolio_id
+definition_fingerprint
+ts_event
+model_version
+weighting_method
+covariance_method
+correlation_method
+covariance_window
+annualization_days
+```
+
+Within that grain, `ts_ingest DESC, calculation_id DESC` selects the current
+version through:
+
+```text
+risk_platform.latest_portfolio_risk_attribution
+```
+
+The scalar and JSON snapshot contract is exposed through:
+
+```text
+risk_platform.portfolio_attribution_semantic_model
+```
+
+The matrices and contribution vectors are expanded without recalculating the
+analytics:
+
+```text
+risk_platform.portfolio_covariance_model
+risk_platform.portfolio_correlation_model
+risk_platform.portfolio_volatility_contribution_model
+```
+
+`portfolio_covariance_model` and `portfolio_correlation_model` expose one row per
+ordered constituent pair. Undefined correlation cells remain SQL `NULL`.
+`portfolio_volatility_contribution_model` exposes one row per constituent with
+its weight, annualised standalone volatility, marginal contribution, component
+contribution and contribution share.
+
+## Reconciliation Evidence
+
+`sql/portfolio_attribution_consistency_checks.sql` verifies:
+
+- every retained input calculation ID references a portfolio-return row;
+- the current attribution snapshot uses current portfolio-return versions;
+- input IDs, window boundaries and definition metadata align;
+- JSON vector and matrix keys match the declared constituents;
+- portfolio weights sum to one;
+- covariance is symmetric with non-negative diagonals;
+- correlation is symmetric, bounded and has the declared null count;
+- squared portfolio volatility matches portfolio variance;
+- Euler component contributions and shares reconcile;
+- calculation IDs and current grains remain unique;
+- the latest view selects the newest candidate; and
+- semantic, matrix and contribution views have the expected row counts.
+
 ## Safety Bounds
 
-The local reader:
+The analytics reader:
 
 - accepts only `portfolio_daily_returns` from the configured curated base path;
 - filters to one portfolio ID, definition fingerprint and completed end date;
@@ -159,10 +255,15 @@ The local reader:
 - requires exact portfolio-return fields; and
 - performs no provider request.
 
+The warehouse loader applies the same file, byte and row limits to
+`portfolio_risk_attribution`, rejects unsafe local paths, converts only the
+declared JSON evidence fields to JSONB, and performs no analytical
+recalculation.
+
 ## Current Boundary
 
-This slice produces a curated latest-window attribution snapshot only. It does
-not yet add PostgreSQL attribution tables or views, historical snapshots for
-every event date, shrinkage or exponentially weighted covariance estimators,
-factor models, marginal VaR, FX conversion, leverage, short positions,
-transaction costs, scheduled rebalancing, dashboards or alert delivery.
+This path stores one latest-window snapshot per explicit calculation identity. It
+does not yet calculate historical attribution snapshots for every event date,
+shrinkage or exponentially weighted covariance estimators, factor models,
+marginal VaR, FX conversion, leverage, short positions, transaction costs,
+scheduled rebalancing, production scheduling, dashboards or alert delivery.
