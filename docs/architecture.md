@@ -22,6 +22,11 @@ Alpha Vantage daily closes
   -> versioned daily returns and risk analytics
   -> version-preserving PostgreSQL tables
   -> current-version and semantic views
+
+current daily-return versions
+  -> configured long-only portfolio weights
+  -> complete-date alignment
+  -> versioned portfolio returns and risk summaries
 ```
 
 The leading quality goals are:
@@ -90,7 +95,7 @@ The data plane is split into:
 
 1. **Ingestion** — source adapters and canonical schemas.
 2. **Processing** — validation, normalisation, deduplication and windowing.
-3. **Analytics** — minute metrics, daily risk and data quality.
+3. **Analytics** — minute metrics, daily risk, portfolio risk and data quality.
 4. **Storage** — bounded, idempotent raw and curated Parquet publication.
 5. **Orchestration** — sequencing, locks, backfills and summaries.
 6. **Warehouse** — PostgreSQL loading, version retention, views and checks.
@@ -186,6 +191,24 @@ The daily tables are:
 date, model version and parameter set. `daily_risk_semantic_model` joins symbol
 reference data on both `source` and `symbol`.
 
+### Portfolio daily risk
+
+```text
+current daily_returns versions
+  -> portfolio definition and weight validation
+  -> complete-date alignment across constituents
+  -> weighted portfolio returns
+  -> annualised volatility, historical VaR and drawdown
+  -> portfolio_daily_returns
+  -> portfolio_daily_risk_summary
+```
+
+The portfolio path selects the latest component calculation per source, symbol
+and event date using ingest time and calculation ID. Only dates with every
+configured constituent are emitted. Weights are positive, unique by
+source/symbol and sum to one. Component returns, contributions and calculation
+IDs remain embedded as stable JSON evidence.
+
 ### Backfill
 
 The hourly backfill runner reads immutable raw partitions, resumes after the last
@@ -215,7 +238,7 @@ deploys and never runs `terraform apply`.
 | Identity | Stable source event IDs and deterministic calculation IDs |
 | Replay | Immutable raw data and content-addressed curated files |
 | Versioning | Daily calculation versions are retained rather than overwritten |
-| Configuration | YAML for storage, thresholds, symbols and operator choices |
+| Configuration | YAML for storage, thresholds, symbols, portfolios and operator choices |
 | Data quality | Required fields, nulls, ranges, late and duplicate evidence |
 | Concurrency | Local partition locks and repository-global lease fencing |
 | Recovery | Resume checkpoints and safe reruns |
@@ -246,7 +269,8 @@ deploys and never runs `terraform apply`.
 | Q5 | Live and backfill work overlap | Block on the active partition lock |
 | Q6 | Daily history is insufficient | Emit `partial` rather than implying full readiness |
 | Q7 | A warehouse consumer asks for current daily risk | Return one row per parameterised grain |
-| Q8 | Default infrastructure checks run | Validate without deployment or resource creation |
+| Q8 | Portfolio constituent dates are incomplete | Exclude the date, report the count and fail if alignment is insufficient |
+| Q9 | Default infrastructure checks run | Validate without deployment or resource creation |
 
 ## 11. Risks And Technical Debt
 
@@ -258,12 +282,15 @@ deploys and never runs `terraform apply`.
 5. The default container command runs the minute-oriented demo, not the daily
    operator sequence.
 6. Production scheduling, alerts and dashboards are not implemented.
-7. Portfolio-level aggregation and correlation risk are not yet implemented.
-8. Exchange-specific trading calendars are not used; daily observations are
+7. Portfolio outputs are curated Parquet only; PostgreSQL portfolio serving is
+   not yet implemented.
+8. Marginal risk attribution, covariance matrices, FX conversion, short
+   positions and rebalancing schedules are not implemented.
+9. Exchange-specific trading calendars are not used; daily observations are
    consecutive available closes, not guaranteed calendar-day intervals.
-9. PostgreSQL reconciliation is an explicit local operator step rather than a CI
-   database service.
-10. Repository control documentation is extensive relative to the compact data
+10. PostgreSQL reconciliation is an explicit local operator step rather than a
+    CI database service.
+11. Repository control documentation is extensive relative to the compact data
     runtime and should not grow ahead of product evidence.
 
 ## 12. Glossary
@@ -277,4 +304,5 @@ deploys and never runs `terraform apply`.
 | Calculation ID | Deterministic identity of model version, parameters and inputs |
 | Current version | Latest ingest/calculation within a declared serving grain |
 | Partial history | Valid output without enough observations for every configured window |
+| Portfolio definition | Long-only source/symbol constituents and weights that sum to one |
 | Human acceptance | Explicit engineer decision after reviewing code and evidence |

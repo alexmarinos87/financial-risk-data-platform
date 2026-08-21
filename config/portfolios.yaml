@@ -1,0 +1,22 @@
+portfolios:
+  us-tech-equal:
+    description: Equal-weighted US technology equity demo
+    base_currency: USD
+    constituents:
+      - source: alpha_vantage
+        symbol: AAPL
+        weight: 0.5
+      - source: alpha_vantage
+        symbol: MSFT
+        weight: 0.5
+
+  us-tech-60-40:
+    description: Parameterised weight comparison using the same source universe
+    base_currency: USD
+    constituents:
+      - source: alpha_vantage
+        symbol: AAPL
+        weight: 0.6
+      - source: alpha_vantage
+        symbol: MSFT
+        weight: 0.4
