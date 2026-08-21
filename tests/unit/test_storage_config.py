@@ -17,10 +17,13 @@ def test_storage_config_valid():
         "daily_risk_summary",
         "portfolio_daily_returns",
         "portfolio_daily_risk_summary",
+        "portfolio_risk_attribution",
     }.issubset(storage["curated"]["datasets"])
     assert storage["partitioning"]["granularity"]
 
 
 def test_storage_config_missing_keys_raises():
     with pytest.raises(StorageError):
-        validate_storage_config({"storage": {"raw": {}, "curated": {}, "partitioning": {}}})
+        validate_storage_config(
+            {"storage": {"raw": {}, "curated": {}, "partitioning": {}}}
+        )
