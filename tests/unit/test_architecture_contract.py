@@ -3,6 +3,7 @@ from pathlib import Path
 
 def test_architecture_matches_current_runtime_contract() -> None:
     architecture = Path("docs/architecture.md").read_text(encoding="utf-8")
+    attribution = Path("docs/portfolio-attribution.md").read_text(encoding="utf-8")
 
     for required in (
         "Python **3.11**",
@@ -20,9 +21,20 @@ def test_architecture_matches_current_runtime_contract() -> None:
         "latest_portfolio_daily_risk_summary",
         "portfolio_risk_semantic_model",
         "portfolio_daily_contribution_model",
+        "portfolio_risk_attribution",
+        "Euler component-volatility attribution",
         "issue #51",
     ):
         assert required in architecture
+
+    for required in (
+        "portfolio-attribution-v1",
+        "sample_covariance",
+        "component_contribution_i",
+        "portfolio-attribution-demo",
+        "undefined_zero_variance",
+    ):
+        assert required in attribution
 
     for stale in (
         "Python 3.10 or newer",
@@ -30,5 +42,7 @@ def test_architecture_matches_current_runtime_contract() -> None:
         "Portfolio-level aggregation and correlation risk are not yet implemented",
         "Portfolio outputs are curated Parquet only",
         "PostgreSQL portfolio serving is not yet implemented",
+        "Marginal risk attribution, covariance matrices",
+        "Marginal VaR, covariance matrices",
     ):
         assert stale not in architecture

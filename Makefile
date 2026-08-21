@@ -13,8 +13,9 @@ MAX_RECORDS ?= 100
 VOL_WINDOW ?= 20
 VAR_WINDOW ?= 60
 VAR_CONFIDENCE ?= 0.95
+COVARIANCE_WINDOW ?= 20
 
-.PHONY: setup lint type-check test dependency-check format benchmark-io docker-build k8s-render-dev k8s-render-prod k8s-check terraform-check infrastructure-check quality-check iteration-check clean-generated security-check readiness-check sandbox-once overnight-sandbox morning-review daily-risk-demo portfolio-risk-demo warehouse-schema daily-risk-warehouse-dry-run daily-risk-warehouse-load check-daily-risk-consistency portfolio-risk-warehouse-dry-run portfolio-risk-warehouse-load check-portfolio-risk-consistency local-db-up local-db-down local-db-wait local-db-logs postgres-shell mongo-shell run-demo load-postgres-demo load-postgres-dry-run check-postgres-consistency consistency-demo
+.PHONY: setup lint type-check test dependency-check format benchmark-io docker-build k8s-render-dev k8s-render-prod k8s-check terraform-check infrastructure-check quality-check iteration-check clean-generated security-check readiness-check sandbox-once overnight-sandbox morning-review daily-risk-demo portfolio-risk-demo portfolio-attribution-demo warehouse-schema daily-risk-warehouse-dry-run daily-risk-warehouse-load check-daily-risk-consistency portfolio-risk-warehouse-dry-run portfolio-risk-warehouse-load check-portfolio-risk-consistency local-db-up local-db-down local-db-wait local-db-logs postgres-shell mongo-shell run-demo load-postgres-demo load-postgres-dry-run check-postgres-consistency consistency-demo
 
 setup:
 	python3 -m venv .venv
@@ -122,6 +123,19 @@ portfolio-risk-demo:
 		--var-window "$(VAR_WINDOW)" \
 		--var-confidence "$(VAR_CONFIDENCE)" \
 		--summary-json .demo/portfolio-risk-summary.json
+
+portfolio-attribution-demo:
+	@set -eu; \
+	end_date="$(END_DATE)"; \
+	if [ -z "$$end_date" ]; then \
+		end_date="$$($(PYTHON) -c 'from datetime import datetime, timedelta, timezone; print((datetime.now(timezone.utc).date() - timedelta(days=1)).isoformat())')"; \
+	fi; \
+	$(PYTHON) -m src.orchestration.run_portfolio_attribution \
+		--portfolio-id "$(PORTFOLIO_ID)" \
+		--portfolio-config "$(PORTFOLIO_CONFIG)" \
+		--end-date "$$end_date" \
+		--covariance-window "$(COVARIANCE_WINDOW)" \
+		--summary-json .demo/portfolio-attribution-summary.json
 
 warehouse-schema: local-db-wait
 	docker compose exec -T postgres psql -U risk_user -d risk_platform \

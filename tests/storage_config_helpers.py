@@ -16,6 +16,7 @@ CURATED_DATASETS = {
     "daily_risk_summary": "daily_risk_summary",
     "portfolio_daily_returns": "portfolio_daily_returns",
     "portfolio_daily_risk_summary": "portfolio_daily_risk_summary",
+    "portfolio_risk_attribution": "portfolio_risk_attribution",
 }
 
 
