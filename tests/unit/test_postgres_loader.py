@@ -4,6 +4,10 @@ import json
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
+from src.analytics.portfolio_risk import (
+    build_portfolio_risk_outputs,
+    parse_portfolio_definition,
+)
 from src.ingestion.alpha_vantage_client import alpha_vantage_daily_event_id
 from src.ingestion.schemas import MarketEvent
 from src.orchestration.run_daily_risk import run_daily_risk
@@ -45,6 +49,55 @@ def _daily_raw_events() -> list[dict[str, object]]:
     ]
 
 
+def _portfolio_definition():
+    return parse_portfolio_definition(
+        {
+            "portfolios": {
+                "us-tech-equal": {
+                    "base_currency": "USD",
+                    "constituents": [
+                        {
+                            "source": "alpha_vantage",
+                            "symbol": "AAPL",
+                            "weight": 0.5,
+                        },
+                        {
+                            "source": "alpha_vantage",
+                            "symbol": "MSFT",
+                            "weight": 0.5,
+                        },
+                    ],
+                }
+            }
+        },
+        "us-tech-equal",
+    )
+
+
+def _portfolio_component_returns() -> list[dict[str, object]]:
+    ingested_at = datetime(2026, 1, 10, 12, tzinfo=timezone.utc)
+    records: list[dict[str, object]] = []
+    for day, aapl, msft in [
+        (2, 0.10, 0.02),
+        (3, -0.04, 0.00),
+        (4, 0.06, 0.02),
+    ]:
+        for symbol, value in (("AAPL", aapl), ("MSFT", msft)):
+            records.append(
+                {
+                    "model_version": "daily-risk-v2",
+                    "calculation_id": f"{symbol}-{day}",
+                    "source": "alpha_vantage",
+                    "symbol": symbol,
+                    "source_event_id": f"{symbol}-event-{day}",
+                    "ts_event": datetime(2026, 1, day, tzinfo=timezone.utc),
+                    "ts_ingest": ingested_at + timedelta(minutes=day),
+                    "return_1d": value,
+                }
+            )
+    return records
+
+
 def test_collect_load_batches_matches_demo_pipeline_outputs(tmp_path: Path) -> None:
     storage_config_path = write_storage_config(tmp_path)
     input_path = _write_demo_input(tmp_path)
@@ -70,6 +123,8 @@ def test_collect_load_batches_matches_demo_pipeline_outputs(tmp_path: Path) -> N
         "daily_returns": 0,
         "daily_volatility": 0,
         "daily_risk_summary": 0,
+        "portfolio_daily_returns": 0,
+        "portfolio_daily_risk_summary": 0,
     }
     assert batches["risk_summary"][0]["external_signal_count"] == 0
     assert "latest_external_signal_name" in batches["risk_summary"][0]
@@ -112,6 +167,46 @@ def test_collect_load_batches_retains_daily_model_versions(tmp_path: Path) -> No
     assert len({row["calculation_id"] for row in latest_date_rows}) == 2
 
 
+def test_collect_load_batches_preserves_portfolio_evidence(tmp_path: Path) -> None:
+    storage_config = build_storage_config(tmp_path)
+    storage_config_path = write_storage_config(tmp_path)
+    outputs = build_portfolio_risk_outputs(
+        _portfolio_component_returns(),
+        definition=_portfolio_definition(),
+        volatility_window=2,
+        var_window=2,
+        var_confidence=0.95,
+    )
+
+    assert write_records(
+        list(outputs.returns),
+        kind="curated",
+        dataset="portfolio_daily_returns",
+        storage_config=storage_config,
+    ) == 3
+    assert write_records(
+        list(outputs.risk_summary),
+        kind="curated",
+        dataset="portfolio_daily_risk_summary",
+        storage_config=storage_config,
+    ) == 3
+
+    batches = collect_load_batches(storage_config_path)
+
+    assert len(batches["portfolio_daily_returns"]) == 3
+    assert len(batches["portfolio_daily_risk_summary"]) == 3
+    portfolio_return = batches["portfolio_daily_returns"][0]
+    assert portfolio_return["weighting_method"] == "constant_weight_daily_rebalanced"
+    assert json.loads(portfolio_return["weights_json"]) == {
+        "alpha_vantage:AAPL": 0.5,
+        "alpha_vantage:MSFT": 0.5,
+    }
+    assert set(json.loads(portfolio_return["component_calculation_ids_json"])) == {
+        "alpha_vantage:AAPL",
+        "alpha_vantage:MSFT",
+    }
+
+
 def test_load_batches_to_postgres_dry_run_returns_counts(tmp_path: Path) -> None:
     storage_config_path = write_storage_config(tmp_path)
     input_path = _write_demo_input(tmp_path)
@@ -135,6 +230,8 @@ def test_load_batches_to_postgres_dry_run_returns_counts(tmp_path: Path) -> None
     assert counts["daily_returns"] == 0
     assert counts["daily_volatility"] == 0
     assert counts["daily_risk_summary"] == 0
+    assert counts["portfolio_daily_returns"] == 0
+    assert counts["portfolio_daily_risk_summary"] == 0
 
 
 def test_build_upsert_sql_quotes_identifiers_and_conflict_key() -> None:
@@ -157,7 +254,8 @@ def test_daily_load_specs_use_calculation_id_as_the_version_key() -> None:
     daily_specs = {
         spec.table_name: spec
         for spec in LOAD_SPECS
-        if spec.table_name in {"daily_returns", "daily_volatility", "daily_risk_summary"}
+        if spec.table_name
+        in {"daily_returns", "daily_volatility", "daily_risk_summary"}
     }
 
     assert set(daily_specs) == {
@@ -165,11 +263,52 @@ def test_daily_load_specs_use_calculation_id_as_the_version_key() -> None:
         "daily_volatility",
         "daily_risk_summary",
     }
-    assert all(spec.conflict_columns == ("calculation_id",) for spec in daily_specs.values())
+    assert all(
+        spec.conflict_columns == ("calculation_id",)
+        for spec in daily_specs.values()
+    )
     summary_spec = daily_specs["daily_risk_summary"]
     assert "volatility_window" in summary_spec.columns
     assert "annualization_days" in summary_spec.columns
-    assert 'ON CONFLICT ("calculation_id") DO UPDATE' in build_upsert_sql(summary_spec)
+    assert 'ON CONFLICT ("calculation_id") DO UPDATE' in build_upsert_sql(
+        summary_spec
+    )
+
+
+def test_portfolio_load_specs_preserve_json_and_foreign_key_order() -> None:
+    names = [spec.table_name for spec in LOAD_SPECS]
+    portfolio_specs = {
+        spec.table_name: spec
+        for spec in LOAD_SPECS
+        if spec.table_name
+        in {"portfolio_daily_returns", "portfolio_daily_risk_summary"}
+    }
+
+    assert set(portfolio_specs) == {
+        "portfolio_daily_returns",
+        "portfolio_daily_risk_summary",
+    }
+    assert all(
+        spec.conflict_columns == ("calculation_id",)
+        for spec in portfolio_specs.values()
+    )
+    assert portfolio_specs["portfolio_daily_returns"].jsonb_columns == frozenset(
+        {
+            "weights_json",
+            "component_calculation_ids_json",
+            "component_returns_json",
+            "contributions_json",
+        }
+    )
+    assert portfolio_specs[
+        "portfolio_daily_risk_summary"
+    ].jsonb_columns == frozenset({"weights_json"})
+    assert names.index("portfolio_daily_returns") < names.index(
+        "portfolio_daily_risk_summary"
+    )
+    assert 'ON CONFLICT ("calculation_id") DO UPDATE' in build_upsert_sql(
+        portfolio_specs["portfolio_daily_risk_summary"]
+    )
 
 
 def test_all_load_specs_have_update_columns() -> None:
