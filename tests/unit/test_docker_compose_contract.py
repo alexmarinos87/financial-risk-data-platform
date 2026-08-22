@@ -13,28 +13,23 @@ def _load_compose() -> dict[str, Any]:
 
 def test_local_database_services_are_present() -> None:
     compose = _load_compose()
-
     assert {"postgres", "mongo"} <= set(compose["services"])
 
 
 def test_local_database_ports_are_bound_to_loopback_only() -> None:
     services = _load_compose()["services"]
-
     assert services["postgres"]["ports"] == ["127.0.0.1:5433:5432"]
     assert services["mongo"]["ports"] == ["127.0.0.1:27018:27017"]
 
 
-def test_local_database_seed_mounts_are_read_only() -> None:
+def test_local_database_seed_mounts_are_read_only_and_ordered() -> None:
     services = _load_compose()["services"]
-
     assert services["postgres"]["volumes"] == [
         "./sql/postgres_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro",
         "./sql/postgres_demo_data.sql:/docker-entrypoint-initdb.d/02_demo_data.sql:ro",
         "./sql/portfolio_schema.sql:/docker-entrypoint-initdb.d/03_portfolio_schema.sql:ro",
-        (
-            "./sql/portfolio_attribution_schema.sql:"
-            "/docker-entrypoint-initdb.d/04_portfolio_attribution_schema.sql:ro"
-        ),
+        "./sql/portfolio_attribution_schema.sql:/docker-entrypoint-initdb.d/04_portfolio_attribution_schema.sql:ro",
+        "./sql/portfolio_risk_limits_schema.sql:/docker-entrypoint-initdb.d/05_portfolio_risk_limits_schema.sql:ro",
     ]
     assert services["mongo"]["volumes"] == [
         "./mongo/init:/docker-entrypoint-initdb.d:ro"
@@ -43,7 +38,6 @@ def test_local_database_seed_mounts_are_read_only() -> None:
 
 def test_local_database_services_have_healthchecks() -> None:
     services = _load_compose()["services"]
-
     assert (
         "pg_isready -U risk_user -d risk_platform"
         in services["postgres"]["healthcheck"]["test"]
@@ -57,7 +51,6 @@ def test_local_database_services_have_healthchecks() -> None:
 
 def test_postgres_uses_demo_only_credentials() -> None:
     environment = _load_compose()["services"]["postgres"]["environment"]
-
     assert environment == {
         "POSTGRES_DB": "risk_platform",
         "POSTGRES_USER": "risk_user",
