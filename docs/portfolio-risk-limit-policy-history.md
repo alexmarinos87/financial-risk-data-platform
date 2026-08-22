@@ -2,8 +2,9 @@
 
 ## Outcome
 
-Risk-limit thresholds now have an explicit temporal-governance contract before
-they are wired into historical evaluation:
+Risk-limit thresholds have an explicit temporal-governance contract and the
+historical evaluator selects one governed version before reading attribution
+data:
 
 ```text
 risk-limit policy history
@@ -12,12 +13,12 @@ risk-limit policy history
   -> select exactly one version for an as-of date
   -> preserve threshold identity separately from temporal policy identity
   -> require bounded runs to remain inside one policy version
+  -> bind evaluations to the temporal policy fingerprint
 ```
 
 The contract is implemented in
-`src/analytics/portfolio_risk_limit_policies.py`. Existing risk-limit analytics
-continue to use the current single configured policy until the separate runtime
-wiring increment is reviewed.
+`src/analytics/portfolio_risk_limit_policies.py`. Runtime selection is implemented
+in `src/orchestration/run_portfolio_risk_limits.py`.
 
 ## Configuration Shape
 
@@ -121,15 +122,18 @@ policy = load_effective_portfolio_risk_limit_policy(
 )
 ```
 
-A bounded operation can then call `validate_policy_range`. The current contract
-requires the explicit start and end dates to remain within one selected policy
-version. A later runtime increment will decide whether the historical evaluator
-splits a broad request into per-version segments or requires the operator to do
-so explicitly.
+`run_portfolio_risk_limits` uses its inclusive end date as `as_of_date`, then
+calls `validate_policy_range`. The optional start date and required end date must
+remain within one selected policy version. A request crossing a boundary is
+rejected before attribution Parquet is read and must be split by version.
+
+The resulting evaluation calculation IDs bind the temporal policy fingerprint,
+so a renewal or threshold change creates new retained evidence without changing
+the risk formulas or overwriting earlier versions.
 
 ## Boundary
 
-This increment defines and tests policy time semantics only. It does not change
-existing risk-limit calculations, stored evaluation schemas, breach lifecycle,
-notification candidates, acknowledgement state, PostgreSQL data, scheduling,
-external delivery, trading controls, credentials, deployment, or Terraform.
+This contract and runtime selection do not automatically segment one request
+across several versions. They do not change the evaluation Parquet schema,
+PostgreSQL schema, breach lifecycle, notification candidates, acknowledgement
+state, provider access, scheduling, deployment, or Terraform.

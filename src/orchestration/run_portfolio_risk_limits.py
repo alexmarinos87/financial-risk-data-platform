@@ -10,11 +10,15 @@ from typing import Any
 from uuid import uuid4
 
 from ..analytics.portfolio_risk import PortfolioDefinition, load_portfolio_definition
+from ..analytics.portfolio_risk_limit_policies import (
+    EffectiveDatedPortfolioRiskLimitPolicy,
+    load_effective_portfolio_risk_limit_policy,
+    policy_metadata,
+    validate_policy_range,
+)
 from ..analytics.portfolio_risk_limits import (
     MAX_LIMIT_EVALUATIONS,
-    PortfolioRiskLimitPolicy,
     evaluate_portfolio_risk_limits,
-    load_portfolio_risk_limit_policy,
 )
 from ..common.exceptions import StorageError, ValidationError
 from ..storage.s3_writer import write_records
@@ -28,7 +32,10 @@ Reader = Callable[[Path], list[dict[str, Any]]]
 Writer = Callable[..., int]
 StorageConfigLoader = Callable[[Path], dict[str, Any]]
 DefinitionLoader = Callable[[Path, str], PortfolioDefinition]
-PolicyLoader = Callable[[Path, str], PortfolioRiskLimitPolicy]
+PolicyLoader = Callable[
+    [Path, str, date],
+    EffectiveDatedPortfolioRiskLimitPolicy,
+]
 
 
 def _calendar_date(value: str) -> date:
@@ -63,7 +70,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Evaluate current portfolio-attribution history against a versioned "
-            "local risk-limit policy."
+            "effective-dated local risk-limit policy."
         )
     )
     parser.add_argument("--policy-id", required=True)
@@ -162,13 +169,28 @@ def run_portfolio_risk_limits(
         raise StorageError("Storage configuration is invalid")
     _require_datasets(storage_config)
 
-    selected_policy_loader = policy_loader or load_portfolio_risk_limit_policy
+    selected_policy_loader = (
+        policy_loader or load_effective_portfolio_risk_limit_policy
+    )
     try:
-        policy = selected_policy_loader(limits_config_path, policy_id)
+        policy = selected_policy_loader(
+            limits_config_path,
+            policy_id,
+            end_date,
+        )
     except ValidationError:
         raise
     except Exception:
         raise ValidationError("Portfolio risk-limit policy is invalid") from None
+    if not isinstance(policy, EffectiveDatedPortfolioRiskLimitPolicy):
+        raise ValidationError(
+            "risk-limit policy loader returned an invalid policy version"
+        )
+    validate_policy_range(
+        policy,
+        start_date=start_date,
+        end_date=end_date,
+    )
 
     selected_definition_loader = definition_loader or load_portfolio_definition
     try:
@@ -217,6 +239,7 @@ def run_portfolio_risk_limits(
         "run_id": str(uuid4()),
         "policy_id": policy.policy_id,
         "policy_fingerprint": policy.fingerprint,
+        "policy_version": policy_metadata(policy),
         "portfolio_id": policy.portfolio_id,
         "definition_fingerprint": definition.fingerprint,
         "selection": dict(output.diagnostics),

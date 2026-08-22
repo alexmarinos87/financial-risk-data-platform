@@ -37,6 +37,9 @@ def _limits_config(tmp_path: Path) -> Path:
         """
 policies:
   test-policy:
+    policy_version_id: test-policy-v1
+    effective_from: 2026-01-01
+    effective_to:
     portfolio_id: us-tech-equal
     covariance_window: 3
     annualization_days: 252
@@ -130,3 +133,4 @@ def test_portfolio_risk_limits_read_attribution_and_replay(tmp_path: Path) -> No
     assert second_output["records_written"] == 0
     assert second_output["records_already_present"] == 2
     assert second["latest_status"] == first["latest_status"]
+    assert second["policy_version"]["policy_version_id"] == "test-policy-v1"
