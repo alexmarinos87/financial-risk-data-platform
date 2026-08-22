@@ -12,7 +12,12 @@ CI_PATH = Path(".github/workflows/ci.yml")
 MAX_POLICY_BYTES = 16 * 1024
 MAX_CI_BYTES = 128 * 1024
 
-REQUIRED_STATUS_CHECKS = ("Security guardrails", "Python readiness", "Infrastructure validation")
+REQUIRED_STATUS_CHECKS = (
+    "Security guardrails",
+    "Python readiness",
+    "PostgreSQL contract",
+    "Infrastructure validation",
+)
 
 EXPECTED_POLICY: dict[str, Any] = {
     "schema_version": 1,
@@ -49,8 +54,8 @@ permissions:
   contents: read""",
 }
 EXPECTED_TOP_LEVEL_KEYS = ("name", "on", "concurrency", "permissions", "jobs")
-EXPECTED_CI_SHA256 = "ea74053122a5485fa42ae6d5bb712d7fdc6ef597553bd3ddd4a3df0a4ce020bf"
-EXPECTED_JOBS_SHA256 = "8dc72551dd4bb4757fc9ce82714fd81b75fce8a20248a71eab05135e82fb10e5"
+EXPECTED_CI_SHA256 = "d5565deda6a226409e5e74f32a49cc3c51f0461987783dfe23f5f9dae8373031"
+EXPECTED_JOBS_SHA256 = "c30862e200b5bfe557ec3e2ca4bb7d763bea8a94251c0010e53897c213273fa8"
 
 ALLOWED_ACTIONS = {
     "actions/checkout": "11d5960a326750d5838078e36cf38b85af677262",
