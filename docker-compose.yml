@@ -15,6 +15,7 @@ services:
       - ./sql/portfolio_risk_limits_schema.sql:/docker-entrypoint-initdb.d/05_portfolio_risk_limits_schema.sql:ro
       - ./sql/portfolio_risk_breach_lifecycle_schema.sql:/docker-entrypoint-initdb.d/06_portfolio_risk_breach_lifecycle_schema.sql:ro
       - ./sql/portfolio_risk_notification_outbox_schema.sql:/docker-entrypoint-initdb.d/07_portfolio_risk_notification_outbox_schema.sql:ro
+      - ./sql/portfolio_risk_limit_policy_schedule_schema.sql:/docker-entrypoint-initdb.d/08_portfolio_risk_limit_policy_schedule_schema.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U risk_user -d risk_platform"]
       interval: 5s

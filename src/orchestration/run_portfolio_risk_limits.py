@@ -10,11 +10,15 @@ from typing import Any
 from uuid import uuid4
 
 from ..analytics.portfolio_risk import PortfolioDefinition, load_portfolio_definition
+from ..analytics.portfolio_risk_limit_policy_schedule import (
+    ScheduledRiskLimitPolicy,
+    evaluate_portfolio_risk_limit_schedule,
+    legacy_policy_schedule,
+    load_portfolio_risk_limit_policy_schedule,
+)
 from ..analytics.portfolio_risk_limits import (
     MAX_LIMIT_EVALUATIONS,
     PortfolioRiskLimitPolicy,
-    evaluate_portfolio_risk_limits,
-    load_portfolio_risk_limit_policy,
 )
 from ..common.exceptions import StorageError, ValidationError
 from ..storage.s3_writer import write_records
@@ -28,7 +32,10 @@ Reader = Callable[[Path], list[dict[str, Any]]]
 Writer = Callable[..., int]
 StorageConfigLoader = Callable[[Path], dict[str, Any]]
 DefinitionLoader = Callable[[Path, str], PortfolioDefinition]
-PolicyLoader = Callable[[Path, str], PortfolioRiskLimitPolicy]
+PolicyLoader = Callable[
+    [Path, str],
+    Sequence[ScheduledRiskLimitPolicy] | PortfolioRiskLimitPolicy,
+]
 
 
 def _calendar_date(value: str) -> date:
@@ -62,8 +69,8 @@ def _max_evaluations(value: str) -> int:
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Evaluate current portfolio-attribution history against a versioned "
-            "local risk-limit policy."
+            "Evaluate current portfolio-attribution history against an "
+            "effective-dated local risk-limit policy schedule."
         )
     )
     parser.add_argument("--policy-id", required=True)
@@ -135,6 +142,19 @@ def _publish(
     return written
 
 
+def _normalise_schedule(
+    loaded: Sequence[ScheduledRiskLimitPolicy] | PortfolioRiskLimitPolicy,
+) -> tuple[ScheduledRiskLimitPolicy, ...]:
+    if isinstance(loaded, PortfolioRiskLimitPolicy):
+        return legacy_policy_schedule(loaded)
+    schedule = tuple(loaded)
+    if not schedule or any(
+        not isinstance(item, ScheduledRiskLimitPolicy) for item in schedule
+    ):
+        raise ValidationError("Portfolio risk-limit policy schedule is invalid")
+    return schedule
+
+
 def run_portfolio_risk_limits(
     *,
     policy_id: str,
@@ -162,19 +182,24 @@ def run_portfolio_risk_limits(
         raise StorageError("Storage configuration is invalid")
     _require_datasets(storage_config)
 
-    selected_policy_loader = policy_loader or load_portfolio_risk_limit_policy
+    selected_policy_loader = (
+        policy_loader or load_portfolio_risk_limit_policy_schedule
+    )
     try:
-        policy = selected_policy_loader(limits_config_path, policy_id)
+        schedule = _normalise_schedule(
+            selected_policy_loader(limits_config_path, policy_id)
+        )
     except ValidationError:
         raise
     except Exception:
         raise ValidationError("Portfolio risk-limit policy is invalid") from None
 
+    portfolio_id = schedule[0].policy.portfolio_id
     selected_definition_loader = definition_loader or load_portfolio_definition
     try:
         definition = selected_definition_loader(
             portfolio_config_path,
-            policy.portfolio_id,
+            portfolio_id,
         )
     except ValidationError:
         raise
@@ -189,9 +214,9 @@ def run_portfolio_risk_limits(
     except Exception:
         raise StorageError("Unable to read local portfolio attribution") from None
 
-    output = evaluate_portfolio_risk_limits(
+    output = evaluate_portfolio_risk_limit_schedule(
         records,
-        policy=policy,
+        schedule=schedule,
         definition_fingerprint=definition.fingerprint,
         start_date=start_date,
         end_date=end_date,
@@ -213,11 +238,14 @@ def run_portfolio_risk_limits(
         "status"
     ]
     selected = len(output.evaluations)
+    policy_fingerprints = list(output.diagnostics["policy_fingerprints"])
+    latest_policy_fingerprint = str(latest[0]["policy_fingerprint"])
     return {
         "run_id": str(uuid4()),
-        "policy_id": policy.policy_id,
-        "policy_fingerprint": policy.fingerprint,
-        "portfolio_id": policy.portfolio_id,
+        "policy_id": schedule[0].policy.policy_id,
+        "policy_fingerprint": latest_policy_fingerprint,
+        "policy_fingerprints": policy_fingerprints,
+        "portfolio_id": portfolio_id,
         "definition_fingerprint": definition.fingerprint,
         "selection": dict(output.diagnostics),
         "parameters": {
@@ -235,6 +263,15 @@ def run_portfolio_risk_limits(
         "latest_status": {
             "ts_event": latest_date.isoformat(),
             "status": latest_status,
+            "policy_fingerprint": latest_policy_fingerprint,
+            "policy_effective_from": latest[0][
+                "policy_effective_from"
+            ].isoformat(),
+            "policy_effective_to": (
+                latest[0]["policy_effective_to"].isoformat()
+                if latest[0]["policy_effective_to"] is not None
+                else None
+            ),
             "metrics": [
                 {
                     "metric_name": item["metric_name"],

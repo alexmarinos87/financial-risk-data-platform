@@ -5,7 +5,7 @@ import json
 import os
 import shutil
 import tempfile
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +19,8 @@ def _to_stable_json(value: Any) -> Any:
     if isinstance(value, datetime):
         timestamp = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
         return timestamp.isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
     if isinstance(value, dict):
         return {key: _to_stable_json(item) for key, item in sorted(value.items())}
     if isinstance(value, list):

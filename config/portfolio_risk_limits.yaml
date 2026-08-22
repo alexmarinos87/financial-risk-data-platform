@@ -3,10 +3,21 @@ policies:
     portfolio_id: us-tech-equal
     covariance_window: 20
     annualization_days: 252
-    limits:
-      portfolio_volatility_annualized:
-        warning: 0.30
-        critical: 0.45
-      largest_absolute_component_contribution_share:
-        warning: 0.65
-        critical: 0.80
+    versions:
+      - effective_from: 2026-01-01
+        effective_to: 2026-07-01
+        limits:
+          portfolio_volatility_annualized:
+            warning: 0.30
+            critical: 0.45
+          largest_absolute_component_contribution_share:
+            warning: 0.65
+            critical: 0.80
+      - effective_from: 2026-07-01
+        limits:
+          portfolio_volatility_annualized:
+            warning: 0.28
+            critical: 0.42
+          largest_absolute_component_contribution_share:
+            warning: 0.60
+            critical: 0.75
