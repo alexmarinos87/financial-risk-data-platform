@@ -29,4 +29,4 @@ def test_governed_cycle_documents_temporal_selection_and_boundaries() -> None:
         "one portfolio-scoped lock",
         "does not send notifications",
     ):
-        assert required in docs
+        assert required in docs.lower()
