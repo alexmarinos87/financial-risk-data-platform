@@ -1,6 +1,9 @@
 portfolios:
   us-tech-equal:
     description: Equal-weighted US technology equity demo
+    mandate_id: us-tech-equal-v1
+    effective_from: 2020-01-01
+    effective_to: null
     base_currency: USD
     constituents:
       - source: alpha_vantage
@@ -12,6 +15,9 @@ portfolios:
 
   us-tech-60-40:
     description: Parameterised weight comparison using the same source universe
+    mandate_id: us-tech-60-40-v1
+    effective_from: 2020-01-01
+    effective_to: null
     base_currency: USD
     constituents:
       - source: alpha_vantage
