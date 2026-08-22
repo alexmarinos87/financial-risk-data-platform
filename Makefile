@@ -7,6 +7,8 @@ REVIEW_BASE_REF ?= origin/main
 SYMBOL ?= IBM
 PORTFOLIO_ID ?= us-tech-equal
 PORTFOLIO_CONFIG ?= config/portfolios.yaml
+RISK_LIMIT_POLICY_ID ?= us-tech-standard
+RISK_LIMITS_CONFIG ?= config/portfolio_risk_limits.yaml
 START_DATE ?=
 END_DATE ?=
 MAX_RECORDS ?= 100
@@ -15,8 +17,9 @@ VAR_WINDOW ?= 60
 VAR_CONFIDENCE ?= 0.95
 COVARIANCE_WINDOW ?= 20
 ATTRIBUTION_MAX_SNAPSHOTS ?= 2500
+RISK_LIMIT_MAX_EVALUATIONS ?= 10000
 
-.PHONY: setup lint type-check test dependency-check format benchmark-io docker-build k8s-render-dev k8s-render-prod k8s-check terraform-check infrastructure-check quality-check iteration-check clean-generated security-check readiness-check sandbox-once overnight-sandbox morning-review daily-risk-demo portfolio-risk-demo portfolio-attribution-demo portfolio-attribution-history-demo warehouse-schema daily-risk-warehouse-dry-run daily-risk-warehouse-load check-daily-risk-consistency portfolio-risk-warehouse-dry-run portfolio-risk-warehouse-load check-portfolio-risk-consistency portfolio-attribution-warehouse-dry-run portfolio-attribution-warehouse-load check-portfolio-attribution-consistency local-db-up local-db-down local-db-wait local-db-logs postgres-shell mongo-shell run-demo load-postgres-demo load-postgres-dry-run check-postgres-consistency consistency-demo
+.PHONY: setup lint type-check test dependency-check format benchmark-io docker-build k8s-render-dev k8s-render-prod k8s-check terraform-check infrastructure-check quality-check iteration-check clean-generated security-check readiness-check sandbox-once overnight-sandbox morning-review daily-risk-demo portfolio-risk-demo portfolio-attribution-demo portfolio-attribution-history-demo portfolio-risk-limits-demo warehouse-schema daily-risk-warehouse-dry-run daily-risk-warehouse-load check-daily-risk-consistency portfolio-risk-warehouse-dry-run portfolio-risk-warehouse-load check-portfolio-risk-consistency portfolio-attribution-warehouse-dry-run portfolio-attribution-warehouse-load check-portfolio-attribution-consistency portfolio-risk-limits-warehouse-dry-run portfolio-risk-limits-warehouse-load check-portfolio-risk-limits-consistency postgres-contract-fixture postgres-contract-check local-db-up local-db-down local-db-wait local-db-logs postgres-shell mongo-shell run-demo load-postgres-demo load-postgres-dry-run check-postgres-consistency consistency-demo
 
 setup:
 	python3 -m venv .venv
@@ -155,6 +158,23 @@ portfolio-attribution-history-demo:
 		--max-snapshots "$(ATTRIBUTION_MAX_SNAPSHOTS)" \
 		--summary-json .demo/portfolio-attribution-history-summary.json
 
+portfolio-risk-limits-demo:
+	@set -eu; \
+	end_date="$(END_DATE)"; \
+	if [ -z "$$end_date" ]; then \
+		end_date="$$($(PYTHON) -c 'from datetime import datetime, timedelta, timezone; print((datetime.now(timezone.utc).date() - timedelta(days=1)).isoformat())')"; \
+	fi; \
+	start_args=""; \
+	if [ -n "$(START_DATE)" ]; then start_args="--start-date $(START_DATE)"; fi; \
+	$(PYTHON) -m src.orchestration.run_portfolio_risk_limits \
+		--policy-id "$(RISK_LIMIT_POLICY_ID)" \
+		--limits-config "$(RISK_LIMITS_CONFIG)" \
+		--portfolio-config "$(PORTFOLIO_CONFIG)" \
+		$$start_args \
+		--end-date "$$end_date" \
+		--max-evaluations "$(RISK_LIMIT_MAX_EVALUATIONS)" \
+		--summary-json .demo/portfolio-risk-limits-summary.json
+
 warehouse-schema: local-db-wait
 	docker compose exec -T postgres psql -U risk_user -d risk_platform \
 		< sql/postgres_schema.sql
@@ -162,6 +182,8 @@ warehouse-schema: local-db-wait
 		< sql/portfolio_schema.sql
 	docker compose exec -T postgres psql -U risk_user -d risk_platform \
 		< sql/portfolio_attribution_schema.sql
+	docker compose exec -T postgres psql -U risk_user -d risk_platform \
+		< sql/portfolio_risk_limits_schema.sql
 
 daily-risk-warehouse-dry-run:
 	$(PYTHON) -m src.warehouse.postgres_loader --dry-run
@@ -195,6 +217,51 @@ check-portfolio-attribution-consistency:
 	docker compose exec -T postgres psql -U risk_user -d risk_platform \
 		< sql/portfolio_attribution_consistency_checks.sql
 
+portfolio-risk-limits-warehouse-dry-run:
+	$(PYTHON) -m src.warehouse.portfolio_risk_limits_loader --dry-run
+
+portfolio-risk-limits-warehouse-load: warehouse-schema
+	$(PYTHON) -m src.warehouse.postgres_loader --dsn "$(LOCAL_POSTGRES_DSN)"
+	$(PYTHON) -m src.warehouse.portfolio_attribution_loader \
+		--dsn "$(LOCAL_POSTGRES_DSN)"
+	$(PYTHON) -m src.warehouse.portfolio_risk_limits_loader \
+		--dsn "$(LOCAL_POSTGRES_DSN)"
+
+check-portfolio-risk-limits-consistency:
+	docker compose exec -T postgres psql -U risk_user -d risk_platform \
+		< sql/portfolio_risk_limits_consistency_checks.sql
+
+postgres-contract-fixture:
+	$(PYTHON) -m src.orchestration.build_postgres_contract_fixture \
+		--summary-json .demo/postgres-contract-fixture.json
+
+postgres-contract-check:
+	docker compose down -v --remove-orphans
+	docker compose up -d postgres
+	$(MAKE) local-db-wait
+	$(PYTHON) -m src.warehouse.postgres_consistency \
+		--dsn "$(LOCAL_POSTGRES_DSN)" \
+		--check sql/consistency_checks.sql
+	$(MAKE) clean-generated
+	$(MAKE) postgres-contract-fixture
+	$(MAKE) warehouse-schema
+	$(PYTHON) -m src.warehouse.postgres_loader --dsn "$(LOCAL_POSTGRES_DSN)"
+	$(PYTHON) -m src.warehouse.portfolio_attribution_loader \
+		--dsn "$(LOCAL_POSTGRES_DSN)"
+	$(PYTHON) -m src.warehouse.portfolio_risk_limits_loader \
+		--dsn "$(LOCAL_POSTGRES_DSN)"
+	$(PYTHON) -m src.warehouse.postgres_loader --dsn "$(LOCAL_POSTGRES_DSN)"
+	$(PYTHON) -m src.warehouse.portfolio_attribution_loader \
+		--dsn "$(LOCAL_POSTGRES_DSN)"
+	$(PYTHON) -m src.warehouse.portfolio_risk_limits_loader \
+		--dsn "$(LOCAL_POSTGRES_DSN)"
+	$(PYTHON) -m src.warehouse.postgres_consistency \
+		--dsn "$(LOCAL_POSTGRES_DSN)" \
+		--check sql/daily_risk_consistency_checks.sql \
+		--check sql/portfolio_risk_consistency_checks.sql \
+		--check sql/portfolio_attribution_consistency_checks.sql \
+		--check sql/portfolio_risk_limits_consistency_checks.sql
+
 local-db-up:
 	docker compose up -d postgres mongo
 
@@ -202,7 +269,7 @@ local-db-down:
 	docker compose down -v
 
 local-db-wait:
-	@until docker compose exec -T postgres pg_isready -U risk_user -d risk_platform >/dev/null 2>&1; do \
+	@until docker compose exec -T postgres sh -c 'test "$$(cat /proc/1/comm)" = postgres && pg_isready -U risk_user -d risk_platform >/dev/null' >/dev/null 2>&1; do \
 		echo "Waiting for PostgreSQL..."; \
 		sleep 1; \
 	done

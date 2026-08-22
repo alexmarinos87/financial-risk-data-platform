@@ -6,6 +6,7 @@
   "required_status_checks": [
     "Security guardrails",
     "Python readiness",
+    "PostgreSQL contract",
     "Infrastructure validation"
   ],
   "adapters": {
