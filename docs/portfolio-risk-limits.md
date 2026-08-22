@@ -2,8 +2,8 @@
 
 ## Outcome
 
-This increment evaluates the rolling portfolio-attribution series against a
-versioned local policy and retains deterministic evidence for every metric:
+This path evaluates the rolling portfolio-attribution series against a versioned
+local policy and retains deterministic evidence for every metric:
 
 ```text
 current portfolio_risk_attribution snapshots
@@ -13,10 +13,12 @@ current portfolio_risk_attribution snapshots
   -> largest absolute component-contribution-share evaluation
   -> versioned portfolio_risk_limit_evaluations Parquet
   -> PostgreSQL history, current breach and snapshot-status views
+  -> append-only human acknowledgement evidence
+  -> open and acknowledged breach views
 ```
 
-It provides monitoring evidence only. It does not send alerts, block trades,
-change positions or make an approval decision.
+It provides monitoring and review evidence only. It does not send alerts, block
+trades, change positions or make an approval decision.
 
 ## Policy
 
@@ -154,6 +156,76 @@ rows.
 `portfolio_risk_limit_snapshot_status` combines the two current metrics into one
 portfolio-date status using critical > warning > ok precedence.
 
+## Breach Acknowledgement
+
+A human reviewer can append an acknowledgement to one current breach:
+
+```bash
+.venv/bin/python -m src.warehouse.portfolio_risk_limit_acknowledger \
+  --calculation-id portfolio-risk-limits-v1-example \
+  --request-id INC-2026-001 \
+  --acknowledged-by reviewer@example.com \
+  --disposition investigating \
+  --reason 'Reviewing the component concentration and source inputs.'
+```
+
+The supported dispositions are:
+
+```text
+investigating
+accepted
+false_positive
+```
+
+The acknowledgement model is `portfolio-risk-limit-ack-v1`. Its deterministic
+identity binds the target evaluation and caller-supplied request ID. Retrying the
+same request with the same immutable content is idempotent. Reusing the request
+ID with different actor, disposition or reason is rejected.
+
+Acknowledgements are stored in:
+
+```text
+risk_platform.portfolio_risk_limit_acknowledgements
+```
+
+The table is append-only. PostgreSQL triggers reject updates and deletes, and an
+insert trigger requires the target evaluation to be a breach with a
+timezone-aware acknowledgement time on or after the breach event.
+
+The reporting contracts are:
+
+```text
+risk_platform.portfolio_risk_limit_acknowledgement_history
+risk_platform.portfolio_risk_limit_breach_status
+risk_platform.portfolio_risk_limit_open_breaches
+risk_platform.portfolio_risk_limit_acknowledged_breaches
+```
+
+`portfolio_risk_limit_breach_status` attaches the latest acknowledgement to each
+current breach while retaining an acknowledgement count. The open and
+acknowledged views partition current breaches for operator triage.
+
+An acknowledgement **does not change the breach status**, rewrite a risk-limit
+evaluation, approve a trade or remove historical evidence. It records that a
+named human reviewed the current breach. If a corrected attribution creates a
+new current evaluation, that replacement requires its own acknowledgement.
+
+## Reconciliation Evidence
+
+`sql/portfolio_risk_limits_consistency_checks.sql` validates both the monitoring
+and acknowledgement contracts. In addition to the evaluation checks, it verifies:
+
+- every acknowledgement references a retained breach evaluation;
+- acknowledgement timestamps do not precede the breach event;
+- request IDs are unique within each evaluation;
+- acknowledgement history matches the append-only table;
+- breach status selects the latest acknowledgement deterministically;
+- open and acknowledged views partition current breaches; and
+- all three validation and mutation-prevention triggers are enabled.
+
+The required `PostgreSQL contract` CI job applies the schema and executes these
+checks against PostgreSQL 16 on every pull request.
+
 ## Safety And Boundary
 
 The input and warehouse readers retain the existing bounded local pattern:
@@ -164,7 +236,11 @@ The input and warehouse readers retain the existing bounded local pattern:
 - symbolic-link and unsafe-file rejection; and
 - no provider request or cloud mutation.
 
+Acknowledgement actor and reason fields are bounded and reject control
+characters. The CLI reports identifiers and disposition but does not echo the
+free-text reason.
+
 The policy is a transparent demonstration, not a regulatory limit framework.
 Production ownership would additionally require authorised policy lifecycle,
-maker-checker approval, effective dating, alert routing, acknowledgement,
-escalation, exception management and audit retention controls.
+maker-checker approval, effective dating, alert routing, escalation, exception
+expiry, access control and formal audit-retention controls.
