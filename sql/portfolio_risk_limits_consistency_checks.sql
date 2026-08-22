@@ -1,4 +1,4 @@
--- Reconciliation checks for portfolio risk-limit monitoring.
+-- Reconciliation checks for portfolio risk-limit monitoring and human acknowledgements.
 -- Run after attribution and limit outputs have been loaded into PostgreSQL.
 
 WITH counts AS (
@@ -23,7 +23,22 @@ WITH counts AS (
                 attribution_calculation_id,
                 ts_event
             FROM risk_platform.latest_portfolio_risk_limit_evaluations
-        ) snapshots) AS expected_status_rows
+        ) snapshots) AS expected_status_rows,
+        (SELECT COUNT(*)
+         FROM risk_platform.portfolio_risk_limit_acknowledgements)
+            AS acknowledgement_rows,
+        (SELECT COUNT(*)
+         FROM risk_platform.portfolio_risk_limit_acknowledgement_history)
+            AS acknowledgement_history_rows,
+        (SELECT COUNT(*)
+         FROM risk_platform.portfolio_risk_limit_breach_status)
+            AS breach_status_rows,
+        (SELECT COUNT(*)
+         FROM risk_platform.portfolio_risk_limit_open_breaches)
+            AS open_breach_rows,
+        (SELECT COUNT(*)
+         FROM risk_platform.portfolio_risk_limit_acknowledged_breaches)
+            AS acknowledged_breach_rows
 ),
 integrity AS (
     SELECT
@@ -196,7 +211,76 @@ integrity AS (
          WHERE status_row.metric_count <> expected.metric_count
             OR status_row.breach_count <> expected.breach_count
             OR status_row.overall_status <> expected.overall_status)
-            AS invalid_snapshot_status_rows
+            AS invalid_snapshot_status_rows,
+        (SELECT COUNT(*)
+         FROM risk_platform.portfolio_risk_limit_acknowledgements acknowledgement
+         LEFT JOIN risk_platform.portfolio_risk_limit_evaluations evaluation
+           ON evaluation.calculation_id
+                = acknowledgement.evaluation_calculation_id
+         WHERE evaluation.calculation_id IS NULL)
+            AS orphan_acknowledgements,
+        (SELECT COUNT(*)
+         FROM risk_platform.portfolio_risk_limit_acknowledgements acknowledgement
+         JOIN risk_platform.portfolio_risk_limit_evaluations evaluation
+           ON evaluation.calculation_id
+                = acknowledgement.evaluation_calculation_id
+         WHERE
+            NOT evaluation.is_breach
+            OR acknowledgement.acknowledged_at < evaluation.ts_event)
+            AS invalid_acknowledgement_targets,
+        (SELECT COUNT(*)
+         FROM (
+            SELECT
+                evaluation_calculation_id,
+                request_id,
+                COUNT(*) AS row_count
+            FROM risk_platform.portfolio_risk_limit_acknowledgements
+            GROUP BY evaluation_calculation_id, request_id
+            HAVING COUNT(*) > 1
+         ) duplicate_requests)
+            AS duplicate_acknowledgement_requests,
+        (SELECT COUNT(*)
+         FROM risk_platform.portfolio_risk_limit_breach_status breach_status
+         WHERE
+            breach_status.acknowledgement_count <> (
+                SELECT COUNT(*)
+                FROM risk_platform.portfolio_risk_limit_acknowledgements acknowledgement
+                WHERE acknowledgement.evaluation_calculation_id
+                    = breach_status.calculation_id
+            )
+            OR breach_status.acknowledgement_id IS DISTINCT FROM (
+                SELECT acknowledgement.acknowledgement_id
+                FROM risk_platform.portfolio_risk_limit_acknowledgements acknowledgement
+                WHERE acknowledgement.evaluation_calculation_id
+                    = breach_status.calculation_id
+                ORDER BY
+                    acknowledgement.acknowledged_at DESC,
+                    acknowledgement.acknowledgement_id DESC
+                LIMIT 1
+            )
+            OR breach_status.acknowledgement_status <> CASE
+                WHEN EXISTS (
+                    SELECT 1
+                    FROM risk_platform.portfolio_risk_limit_acknowledgements acknowledgement
+                    WHERE acknowledgement.evaluation_calculation_id
+                        = breach_status.calculation_id
+                ) THEN 'acknowledged'
+                ELSE 'unacknowledged'
+            END)
+            AS invalid_breach_status_rows,
+        (SELECT COUNT(*)
+         FROM pg_trigger
+         WHERE
+            tgrelid = (
+                'risk_platform.portfolio_risk_limit_acknowledgements'
+            )::REGCLASS
+            AND NOT tgisinternal
+            AND tgenabled <> 'D'
+            AND tgname IN (
+                'validate_risk_limit_acknowledgement_insert',
+                'prevent_risk_limit_acknowledgement_update',
+                'prevent_risk_limit_acknowledgement_delete'
+            )) AS enabled_control_triggers
 )
 SELECT
     'portfolio_risk_limit_rows_present' AS check_name,
@@ -269,6 +353,73 @@ UNION ALL
 SELECT 'portfolio_risk_limit_snapshot_status_values_reconcile', '0',
        invalid_snapshot_status_rows::TEXT,
        CASE WHEN invalid_snapshot_status_rows = 0 THEN 'pass' ELSE 'fail' END
+FROM integrity
+
+UNION ALL
+SELECT 'portfolio_risk_limit_acknowledgement_rows_valid', '>=0',
+       acknowledgement_rows::TEXT, 'pass'
+FROM counts
+
+UNION ALL
+SELECT 'portfolio_risk_limit_acknowledgements_reference_breaches', '0',
+       orphan_acknowledgements::TEXT,
+       CASE WHEN orphan_acknowledgements = 0 THEN 'pass' ELSE 'fail' END
+FROM integrity
+
+UNION ALL
+SELECT 'portfolio_risk_limit_acknowledgement_targets_are_valid', '0',
+       invalid_acknowledgement_targets::TEXT,
+       CASE
+           WHEN invalid_acknowledgement_targets = 0 THEN 'pass'
+           ELSE 'fail'
+       END
+FROM integrity
+
+UNION ALL
+SELECT 'portfolio_risk_limit_acknowledgement_requests_unique', '0',
+       duplicate_acknowledgement_requests::TEXT,
+       CASE
+           WHEN duplicate_acknowledgement_requests = 0 THEN 'pass'
+           ELSE 'fail'
+       END
+FROM integrity
+
+UNION ALL
+SELECT 'portfolio_risk_limit_acknowledgement_history_matches_base',
+       acknowledgement_rows::TEXT, acknowledgement_history_rows::TEXT,
+       CASE
+           WHEN acknowledgement_rows = acknowledgement_history_rows THEN 'pass'
+           ELSE 'fail'
+       END
+FROM counts
+
+UNION ALL
+SELECT 'portfolio_risk_limit_breach_status_matches_current_breaches',
+       breach_rows::TEXT, breach_status_rows::TEXT,
+       CASE WHEN breach_rows = breach_status_rows THEN 'pass' ELSE 'fail' END
+FROM counts
+
+UNION ALL
+SELECT 'portfolio_risk_limit_open_and_acknowledged_partition_breaches',
+       breach_rows::TEXT,
+       (open_breach_rows + acknowledged_breach_rows)::TEXT,
+       CASE
+           WHEN breach_rows = open_breach_rows + acknowledged_breach_rows
+               THEN 'pass'
+           ELSE 'fail'
+       END
+FROM counts
+
+UNION ALL
+SELECT 'portfolio_risk_limit_breach_status_selects_latest_acknowledgement', '0',
+       invalid_breach_status_rows::TEXT,
+       CASE WHEN invalid_breach_status_rows = 0 THEN 'pass' ELSE 'fail' END
+FROM integrity
+
+UNION ALL
+SELECT 'portfolio_risk_limit_acknowledgement_triggers_enabled', '3',
+       enabled_control_triggers::TEXT,
+       CASE WHEN enabled_control_triggers = 3 THEN 'pass' ELSE 'fail' END
 FROM integrity
 
 ORDER BY check_name;
