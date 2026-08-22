@@ -138,14 +138,26 @@ mandate = load_portfolio_mandate(
 )
 ```
 
-This increment establishes and tests the schema, selection, range and identity
-rules. Wiring the portfolio, attribution and risk-limit operator commands to this
-selector is deliberately delivered as a separate PR so configuration validation
-and orchestration changes remain independently reviewable.
+The governed cross-stage operator path is:
+
+```text
+src/orchestration/run_governed_portfolio_cycle.py
+```
+
+It selects the mandate containing the requested end date, validates that the
+effective calculation range stays inside that mandate, filters every input
+reader, and injects the same mandate into portfolio risk, rolling attribution and
+risk-limit evaluation. See `docs/governed-portfolio-cycle.md`.
+
+The individual portfolio, attribution and risk-limit commands remain lower-level
+development entry points. Use the governed cycle when one operator run must
+guarantee cross-stage mandate consistency.
 
 ## Remaining Boundary
 
-This repository does not yet provide a mandate approval workflow, maker-checker
-sign-off, scheduled activation, automatic range splitting or database-managed
-configuration history. YAML remains the reviewed source of truth, and activating
-a new mandate requires a normal pull request and green CI evidence.
+This repository does not yet provide automatic range splitting, mandate
+activation, a database-managed configuration registry or automated notification
+delivery. YAML remains the reviewed source of truth. A new mandate still requires
+a normal pull request and green CI evidence; the existing append-only
+acknowledgement contract records review evidence but is not an automatic
+approval system.
