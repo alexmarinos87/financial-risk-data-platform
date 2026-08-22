@@ -1,5 +1,8 @@
 policies:
   us-tech-standard:
+    policy_version_id: us-tech-standard-v1
+    effective_from: 2026-01-01
+    effective_to:
     portfolio_id: us-tech-equal
     covariance_window: 20
     annualization_days: 252
