@@ -23,6 +23,9 @@ The runner is:
 src/orchestration/restore_durable_datasets.py
 ```
 
+The deterministic restore evidence contract is
+`durable-dataset-restore-v1`.
+
 It consumes the JSON result produced by
 `src/orchestration/replicate_durable_datasets.py`. It never lists an S3 prefix
 and never chooses a mutable "latest" manifest. The supplied result must identify
