@@ -2,8 +2,8 @@
 
 ## Outcome
 
-This increment adds a thin orchestration layer over the immutable S3 adapter that
-is already implemented in `src/storage/durable_s3.py`.
+This path adds a thin orchestration layer over the immutable S3 adapter already
+implemented in `src/storage/durable_s3.py`:
 
 ```text
 configured local raw and curated Parquet
@@ -20,8 +20,8 @@ The runner is:
 src/orchestration/replicate_durable_datasets.py
 ```
 
-It does not introduce another S3 client or another object identity. Every object
-write and replay verification delegates to `put_immutable_object`.
+It does not introduce another S3 object identity. Every object write and replay
+verification delegates to `put_immutable_object`.
 
 ## Plan First
 
@@ -98,30 +98,20 @@ The inventory:
 - includes only `*.parquet`;
 - is sorted by durable dataset, relative path and content hash;
 - rejects symbolic-link base paths, dataset paths and files;
-- rejects non-regular files;
-- rejects empty files;
-- rejects objects above the durable store's `max_object_bytes`;
+- rejects non-regular and empty files;
+- rejects objects above the store's `max_object_bytes`;
 - rejects unconfigured dataset selectors;
-- applies an explicit file cap;
-- applies an explicit total-byte cap; and
+- applies explicit file and total-byte caps; and
 - verifies that a file's size is unchanged while it is read.
 
 The requested file cap cannot exceed either the hard 10,000-file bound or the
-selected durable store's `max_list_objects`. The hard total-byte bound is 100 GB;
-the default request bound is 1 GB.
+selected store's `max_list_objects`. The hard total-byte bound is 100 GB; the
+default request bound is 1 GB.
 
 ## Immutable Publication
 
-For each planned file, execution calls the existing adapter with:
-
-```text
-dataset
-payload
-extension
-content type
-configured encryption controls
-```
-
+For each planned file, execution calls the existing adapter with its durable
+dataset, payload, extension, content type and configured encryption controls.
 The adapter owns:
 
 - the SHA-256 object identity;
@@ -148,7 +138,8 @@ present, the runner publishes one canonical JSON manifest under:
 replication-manifests
 ```
 
-The manifest contract is `durable-dataset-replication-v1` and contains only stable evidence:
+The manifest contract is `durable-dataset-replication-v1` and contains only
+stable evidence:
 
 - contract version;
 - store ID;
@@ -161,12 +152,15 @@ The manifest contract is `durable-dataset-replication-v1` and contains only stab
 
 It contains no run timestamp, random run ID, bucket, region, KMS key or
 credential. The manifest ID is a SHA-256-derived identity over its ordered
-entries. Repeating the same local state therefore converges on the same manifest
-object. A changed file, selected dataset or path creates a distinguishable
-manifest.
+entries. Repeating the same local state converges on the same manifest object. A
+changed file, selection or path creates a distinguishable manifest.
 
 The manifest is published last. Its presence means every referenced object
 completed the immutable adapter contract for that execution.
+
+The completed result JSON is also the explicit input to the verified restore
+path documented in `docs/durable-s3-restore.md`. Restore reconstructs this exact
+manifest identity; it does not list a prefix or select a mutable latest object.
 
 ## Failure And Replay Semantics
 
@@ -184,17 +178,18 @@ completed the immutable adapter contract for that execution.
 
 ## Boundary
 
-This increment does not:
+Replication does not:
 
 - create an S3 bucket, KMS key, IAM role or credential;
 - activate the bundled store;
 - upload anything in CI;
 - preserve a mutable partition hierarchy in object keys;
 - delete or overwrite remote objects;
-- restore objects to local storage;
 - schedule replication;
 - deploy infrastructure; or
 - run `terraform apply`.
 
 The source partition path is retained in the immutable manifest. Object keys stay
-content-addressed rather than becoming mutable copies of local paths.
+content-addressed rather than becoming mutable copies of local paths. Verified
+local restore is a separate explicit read workflow, not an implicit side effect
+of replication.
