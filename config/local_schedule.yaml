@@ -1,0 +1,15 @@
+schedules:
+  us-tech-daily:
+    enabled: false
+    portfolio_id: us-tech-equal
+    policy_id: us-tech-standard
+    source: alpha_vantage
+    symbols: [AAPL, MSFT]
+    volatility_window: 20
+    var_window: 60
+    var_confidence: 0.95
+    covariance_window: 20
+    max_snapshots: 2500
+    max_evaluations: 10000
+    max_notifications: 5000
+    max_catchup_days: 3
