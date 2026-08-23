@@ -140,12 +140,17 @@ def test_config_and_inventory_are_deterministic_and_bounded(tmp_path: Path) -> N
     )
 
     assert first == second
-    assert [item.relative_path for item in first] == [
-        raw.relative_to(tmp_path).as_posix(),
-        curated.relative_to(tmp_path).as_posix(),
-    ]
+    assert [item.relative_path for item in first] == sorted(
+        [
+            raw.relative_to(tmp_path).as_posix(),
+            curated.relative_to(tmp_path).as_posix(),
+        ]
+    )
     assert all(item.object_key.startswith(config.prefix + "/") for item in first)
-    assert first[0].sha256 == hashlib.sha256(b"raw").hexdigest()
+    hashes = {item.relative_path: item.sha256 for item in first}
+    assert hashes[raw.relative_to(tmp_path).as_posix()] == hashlib.sha256(
+        b"raw"
+    ).hexdigest()
     assert replication_path.exists()
 
 
@@ -361,7 +366,10 @@ def test_invalid_bucket_and_destination_requirements_fail_closed(
     )
     for environment, pattern in (
         ({"AWS_REGION": "eu-west-2"}, "bucket environment"),
-        ({"RISK_PLATFORM_S3_BUCKET": "risk-platform-example"}, "region environment"),
+        (
+            {"RISK_PLATFORM_S3_BUCKET": "risk-platform-example"},
+            "region environment",
+        ),
         (
             {
                 "RISK_PLATFORM_S3_BUCKET": "Invalid_Bucket",
