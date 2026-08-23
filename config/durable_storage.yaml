@@ -1,0 +1,11 @@
+stores:
+  primary-s3:
+    enabled: false
+    adapter_type: s3
+    bucket_env: RISK_PLATFORM_DURABLE_BUCKET
+    region_env: AWS_REGION
+    prefix: financial-risk-data-platform
+    server_side_encryption: AES256
+    kms_key_env: null
+    max_object_bytes: 100000000
+    max_list_objects: 1000
