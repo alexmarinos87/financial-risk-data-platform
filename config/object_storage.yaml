@@ -1,0 +1,9 @@
+object_storage:
+  s3:
+    enabled: false
+    bucket_env: RISK_PLATFORM_S3_BUCKET
+    region_env: AWS_REGION
+    prefix: financial-risk-data-platform
+    server_side_encryption: AES256
+    maximum_files: 4096
+    maximum_bytes: 1000000000
