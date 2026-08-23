@@ -1,0 +1,15 @@
+method_policies:
+  us-tech-sample:
+    base_policy_id: us-tech-standard
+    attribution:
+      model_version: portfolio-attribution-v1
+      weighting_method: constant_weight_daily_rebalanced
+      covariance_method: sample_annualized
+      correlation_method: pearson
+  us-tech-ewma:
+    base_policy_id: us-tech-standard
+    attribution:
+      model_version: portfolio-attribution-ewma-v1
+      weighting_method: constant_weight_daily_rebalanced
+      covariance_method: ewma_zero_mean_lambda_0_94_annualized
+      correlation_method: implied_from_ewma_covariance
