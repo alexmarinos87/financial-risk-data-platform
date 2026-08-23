@@ -5,7 +5,7 @@ import json
 import os
 import shutil
 import tempfile
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -17,10 +17,19 @@ from ..common.exceptions import StorageError
 
 def _to_stable_json(value: Any) -> Any:
     if isinstance(value, datetime):
-        timestamp = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+        timestamp = (
+            value
+            if value.tzinfo is not None
+            else value.replace(tzinfo=timezone.utc)
+        )
         return timestamp.isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
     if isinstance(value, dict):
-        return {key: _to_stable_json(item) for key, item in sorted(value.items())}
+        return {
+            key: _to_stable_json(item)
+            for key, item in sorted(value.items())
+        }
     if isinstance(value, list):
         return [_to_stable_json(item) for item in value]
     return value
@@ -100,7 +109,9 @@ def create_parquet_file(
             raise StorageError("Staged parquet output failed validation")
         staged_bytes = temporary_path.stat().st_size
         if maximum_bytes is not None and staged_bytes > maximum_bytes:
-            raise StorageError("Staged parquet output exceeds its publication byte limit")
+            raise StorageError(
+                "Staged parquet output exceeds its publication byte limit"
+            )
         temporary_path.chmod(0o600)
         with temporary_path.open("rb") as handle:
             os.fsync(handle.fileno())
@@ -109,7 +120,9 @@ def create_parquet_file(
             os.link(temporary_path, target_path, follow_symlinks=False)
         except FileExistsError:
             if target_path.is_symlink() or not target_path.is_file():
-                raise StorageError("Parquet target appeared with an unsafe file type") from None
+                raise StorageError(
+                    "Parquet target appeared with an unsafe file type"
+                ) from None
             return False
 
         _fsync_directory(target_path.parent)

@@ -1,6 +1,7 @@
+from concurrent.futures import ThreadPoolExecutor
+from datetime import date
 from pathlib import Path
 from threading import Barrier
-from concurrent.futures import ThreadPoolExecutor
 
 import duckdb
 import pytest
@@ -11,7 +12,20 @@ from src.storage.parquet_io import batch_file_name, create_parquet_file
 
 
 def test_batch_filename_preserves_the_legacy_digest_contract() -> None:
-    assert batch_file_name([{"value": 1}], "parquet") == "batch_48208f9428d64634.parquet"
+    assert (
+        batch_file_name([{"value": 1}], "parquet")
+        == "batch_48208f9428d64634.parquet"
+    )
+
+
+def test_batch_filename_supports_calendar_dates_deterministically() -> None:
+    assert batch_file_name(
+        [{"as_of_date": date(2026, 1, 10)}],
+        "parquet",
+    ) == batch_file_name(
+        [{"as_of_date": "2026-01-10"}],
+        "parquet",
+    )
 
 
 def test_create_parquet_file_publishes_private_valid_output(tmp_path: Path) -> None:
@@ -60,7 +74,11 @@ def test_create_parquet_file_enforces_byte_limit_before_publication(
     target = tmp_path / "dataset" / "batch.parquet"
 
     with pytest.raises(StorageError, match="byte limit"):
-        create_parquet_file([{"value": "payload"}], target, maximum_bytes=1)
+        create_parquet_file(
+            [{"value": "payload"}],
+            target,
+            maximum_bytes=1,
+        )
 
     assert not target.exists()
     assert not list(target.parent.glob(".parquet-stage-*"))

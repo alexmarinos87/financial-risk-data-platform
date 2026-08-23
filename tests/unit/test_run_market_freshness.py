@@ -59,6 +59,7 @@ def _storage() -> dict[str, Any]:
                 "base_path": "unused/curated",
                 "datasets": {
                     OUTPUT_DATASET: OUTPUT_DATASET,
+                    "daily_returns": "daily_returns",
                 },
             },
             "format": "parquet",
@@ -129,7 +130,7 @@ def test_runner_reports_replay_and_invalid_writer_results() -> None:
 
 def test_runner_requires_configured_output_dataset() -> None:
     storage = _storage()
-    storage["storage"]["curated"]["datasets"].clear()
+    storage["storage"]["curated"]["datasets"].pop(OUTPUT_DATASET)
 
     with pytest.raises(StorageError, match=OUTPUT_DATASET):
         run_market_freshness(
