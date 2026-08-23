@@ -154,7 +154,7 @@ def test_method_comparison_view_pairs_aligned_current_evaluations() -> None:
                 status_disagreement,
                 higher_observed_method,
                 more_severe_method,
-                comparison_ts
+                epoch_us(comparison_ts) AS comparison_ts_us
             FROM risk_platform.portfolio_risk_limit_method_comparison
             """
         ).fetchone()
@@ -170,7 +170,7 @@ def test_method_comparison_view_pairs_aligned_current_evaluations() -> None:
         "ewma",
         "ewma",
     )
-    assert result[9] == ewma_ingest
+    assert result[9] == int(ewma_ingest.timestamp() * 1_000_000)
 
 
 def test_method_consistency_suite_covers_comparison_contract() -> None:
