@@ -279,7 +279,11 @@ def _missing_object(exc: Exception) -> bool:
     return str(error.get("Code")) in {"404", "NoSuchKey", "NotFound"}
 
 
-def _head(client: S3Client, bucket: str, item: LocalObject) -> Mapping[str, Any] | None:
+def _head(
+    client: S3Client,
+    bucket: str,
+    item: LocalObject,
+) -> Mapping[str, Any] | None:
     try:
         return client.head_object(Bucket=bucket, Key=item.object_key)
     except Exception as exc:
@@ -292,9 +296,15 @@ def _matches_remote(head: Mapping[str, Any], item: LocalObject) -> bool:
     metadata = head.get("Metadata")
     if not isinstance(metadata, Mapping):
         return False
+    raw_content_length = head.get("ContentLength")
+    if isinstance(raw_content_length, bool) or not isinstance(
+        raw_content_length,
+        (int, str),
+    ):
+        return False
     try:
-        content_length = int(head.get("ContentLength"))
-    except (TypeError, ValueError):
+        content_length = int(raw_content_length)
+    except ValueError:
         return False
     return (
         content_length == item.size_bytes
