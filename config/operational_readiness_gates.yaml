@@ -1,0 +1,5 @@
+gates:
+  us-tech-local:
+    operational_policy_id: us-tech-local
+    max_report_age_seconds: 3600
+    allow_warning: false
