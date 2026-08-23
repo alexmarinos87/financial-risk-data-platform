@@ -2,8 +2,9 @@
 
 ## Outcome
 
-This increment turns the existing local schedule, market-freshness records and
-notification delivery history into one deterministic operational report:
+This path turns the existing local schedule, market-freshness records and
+notification delivery history into deterministic operational evidence with an
+append-only PostgreSQL serving contract:
 
 ```text
 local schedule checkpoint
@@ -13,6 +14,8 @@ local schedule checkpoint
   -> four bounded service-level indicators
   -> one reproducible overall status
   -> credential-free JSON evidence
+  -> append-only PostgreSQL history
+  -> latest metric status and current exception views
 ```
 
 It is reporting evidence only. It does not execute the schedule, request market
@@ -40,7 +43,7 @@ missing schedule checkpoint is explicitly `critical` with reason
 `checkpoint_missing` rather than being converted into an invented lag value.
 The overall status uses `critical > warning > ok` precedence.
 
-## Operator command
+## Report command
 
 Use an explicit UTC instant so repeated reviews are deterministic:
 
@@ -109,9 +112,83 @@ The deterministic calculation ID binds policy, schedule, calendar, checkpoint,
 expected constituents, exceptions, retry-exhausted events, thresholds and the
 explicit report instant.
 
+## Append-only PostgreSQL history
+
+Record one generated report with:
+
+```bash
+.venv/bin/python -m src.warehouse.operational_service_level_recorder \
+  --report .demo/operational-service-levels.json
+```
+
+The recorder accepts one regular local JSON file no larger than 1 MB. It validates
+the complete report shape, canonical metric order, thresholds, statuses,
+side-effect flags, dates and identifiers before opening PostgreSQL.
+
+The base table is:
+
+```text
+risk_platform.operational_service_level_reports
+```
+
+It stores both extracted query columns and the complete canonical report as
+JSONB. `document_sha256` binds the exact canonical document. The deterministic
+`calculation_id` is the primary key:
+
+- an exact retry converges on the existing row;
+- the same calculation ID with different content fails closed; and
+- UPDATE and DELETE are blocked by append-only triggers.
+
+## Serving views
+
+The complete metric series is expanded through:
+
+```text
+risk_platform.operational_service_level_metric_history
+```
+
+The latest report remains independently queryable for each exact policy,
+schedule, portfolio and mandate fingerprint through:
+
+```text
+risk_platform.latest_operational_service_level_reports
+```
+
+The latest four indicator rows are exposed through:
+
+```text
+risk_platform.current_operational_service_level_metric_status
+```
+
+Current warning and critical indicators are filtered through:
+
+```text
+risk_platform.current_operational_service_level_exceptions
+```
+
+The current grain retains policy, schedule and mandate fingerprints. Threshold,
+schedule or mandate changes therefore remain separate evidence contracts rather
+than silently replacing one another.
+
+## Reconciliation
+
+`sql/operational_service_levels_consistency_checks.sql` verifies:
+
+- exact metric names, count and canonical order;
+- value, threshold and status semantics;
+- overall-status severity precedence;
+- unique calculation identities and latest grains;
+- newest-report selection;
+- four metric-history rows per report; and
+- exact agreement between current non-OK metrics and the exception view.
+
+The PostgreSQL CI job also records two reports, proves retry convergence, rejects
+conflicting calculation reuse, exercises current views and verifies that UPDATE
+and DELETE fail.
+
 ## Current boundary
 
-This slice produces a deterministic JSON report. It does not yet retain report
-history in PostgreSQL, enforce an execution gate, define rolling availability
-objectives, render a dashboard or deliver alerts. Those are separate increments
-so reporting semantics can be reviewed before persistence and enforcement.
+This path retains deterministic report history and current exception views. It
+does not yet enforce an execution gate, define rolling availability objectives,
+render a dashboard or deliver alerts. Those are separate increments so evidence
+semantics and persistence remain independently reviewable.
