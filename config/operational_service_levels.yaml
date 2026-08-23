@@ -1,0 +1,16 @@
+policies:
+  us-tech-local:
+    schedule_id: us-tech-local
+    metrics:
+      schedule_lag_sessions:
+        warning: 1
+        critical: 2
+      market_freshness_exception_count:
+        warning: 1
+        critical: 2
+      notification_retry_exhausted_count:
+        warning: 1
+        critical: 2
+      notification_oldest_dead_letter_age_seconds:
+        warning: 900
+        critical: 3600
