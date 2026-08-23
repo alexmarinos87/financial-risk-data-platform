@@ -359,8 +359,8 @@ def deliver_portfolio_risk_notifications(
     config = load_webhook_delivery_config(config_path)
     selected_environment = environment or os.environ
     raw_endpoint = selected_environment.get(config.endpoint_env)
-    endpoint_host = None
-    endpoint_value = None
+    endpoint_host: str | None = None
+    endpoint_value: str | None = None
     if raw_endpoint:
         endpoint_value, endpoint_host = _endpoint(raw_endpoint)
     if execute:
@@ -413,6 +413,8 @@ def deliver_portfolio_risk_notifications(
     }
     if not execute or not candidates:
         return summary
+    if endpoint_value is None or endpoint_host is None:
+        raise ValidationError("webhook endpoint was not resolved for execution")
 
     selected_transport = transport or _default_transport
     selected_sleeper = sleeper or time_module.sleep
