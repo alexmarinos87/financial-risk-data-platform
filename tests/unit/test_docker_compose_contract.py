@@ -36,6 +36,7 @@ def test_local_database_seed_mounts_are_read_only_and_ordered() -> None:
         "./sql/portfolio_risk_notification_delivery_schema.sql:/docker-entrypoint-initdb.d/09_portfolio_risk_notification_delivery_schema.sql:ro",
         "./sql/portfolio_covariance_method_schema.sql:/docker-entrypoint-initdb.d/10_portfolio_covariance_method_schema.sql:ro",
         "./sql/portfolio_risk_limits_method_schema.sql:/docker-entrypoint-initdb.d/11_portfolio_risk_limits_method_schema.sql:ro",
+        "./sql/model_approval_schema.sql:/docker-entrypoint-initdb.d/12_model_approval_schema.sql:ro",
     ]
     assert services["mongo"]["volumes"] == [
         "./mongo/init:/docker-entrypoint-initdb.d:ro"
