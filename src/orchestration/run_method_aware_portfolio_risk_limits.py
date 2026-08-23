@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from collections.abc import Callable, Sequence
 from datetime import date
@@ -23,6 +24,12 @@ from ..analytics.portfolio_risk_limits import MAX_LIMIT_EVALUATIONS
 from ..common.exceptions import StorageError, ValidationError
 from ..storage.s3_writer import write_records
 from ..storage.storage_config import load_storage_config, validate_storage_config
+from ..warehouse.model_approval_gate import (
+    ModelApprovalGateEvidence,
+    model_approval_gate_metadata,
+    resolve_model_approval_gate,
+)
+from ..warehouse.model_approval_registry import DEFAULT_POSTGRES_DSN
 from ..warehouse.portfolio_attribution_loader import collect_attribution_records
 
 INPUT_DATASET = "portfolio_risk_attribution"
@@ -33,6 +40,7 @@ Writer = Callable[..., int]
 StorageConfigLoader = Callable[[Path], dict[str, Any]]
 DefinitionLoader = Callable[[Path, str], PortfolioDefinition]
 MethodPolicyLoader = Callable[..., MethodAwarePortfolioRiskLimitPolicy]
+ApprovalGateResolver = Callable[..., ModelApprovalGateEvidence]
 
 
 def _calendar_date(value: str) -> date:
@@ -61,6 +69,13 @@ def _max_evaluations(value: str) -> int:
             f"max_evaluations must be between 1 and {MAX_LIMIT_EVALUATIONS}"
         )
     return parsed
+
+
+def _default_approval_dsn() -> str:
+    return os.environ.get(
+        "MODEL_APPROVAL_POSTGRES_DSN",
+        os.environ.get("WAREHOUSE_POSTGRES_DSN", DEFAULT_POSTGRES_DSN),
+    )
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -97,6 +112,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "--storage-config",
         type=Path,
         default=Path("config/storage.yaml"),
+    )
+    parser.add_argument(
+        "--approval-dsn",
+        default=_default_approval_dsn(),
+        help=(
+            "PostgreSQL DSN containing current model approvals. Defaults to "
+            "MODEL_APPROVAL_POSTGRES_DSN, WAREHOUSE_POSTGRES_DSN or the local "
+            "Docker DSN. The sample baseline does not open this connection."
+        ),
     )
     parser.add_argument("--summary-json", type=Path)
     return parser
@@ -144,6 +168,33 @@ def _publish(
     return written
 
 
+def _resolve_approval_gate(
+    *,
+    policy: MethodAwarePortfolioRiskLimitPolicy,
+    approval_dsn: str,
+    approval_gate_resolver: ApprovalGateResolver | None,
+) -> ModelApprovalGateEvidence:
+    selected_resolver = approval_gate_resolver or resolve_model_approval_gate
+    try:
+        evidence = selected_resolver(
+            method_policy_fingerprint=policy.fingerprint,
+            attribution_model_version=policy.method.attribution_model_version,
+            weighting_method=policy.method.weighting_method,
+            covariance_method=policy.method.covariance_method,
+            correlation_method=policy.method.correlation_method,
+            dsn=approval_dsn,
+        )
+    except (ValidationError, StorageError):
+        raise
+    except RuntimeError:
+        raise StorageError("Model approval gate dependency is unavailable") from None
+    except Exception:
+        raise StorageError("Unable to resolve the model approval gate") from None
+    if not isinstance(evidence, ModelApprovalGateEvidence):
+        raise StorageError("Model approval gate returned incompatible evidence")
+    return evidence
+
+
 def run_method_aware_portfolio_risk_limits(
     *,
     method_policy_id: str,
@@ -154,11 +205,13 @@ def run_method_aware_portfolio_risk_limits(
     storage_config_path: Path,
     start_date: date | None = None,
     max_evaluations: int = MAX_LIMIT_EVALUATIONS,
+    approval_dsn: str = DEFAULT_POSTGRES_DSN,
     reader: Reader | None = None,
     writer: Writer | None = None,
     storage_config_loader: StorageConfigLoader | None = None,
     definition_loader: DefinitionLoader | None = None,
     method_policy_loader: MethodPolicyLoader | None = None,
+    approval_gate_resolver: ApprovalGateResolver | None = None,
 ) -> dict[str, Any]:
     if start_date is not None and start_date > end_date:
         raise ValidationError("start_date must be on or before end_date")
@@ -209,6 +262,12 @@ def run_method_aware_portfolio_risk_limits(
     except Exception:
         raise ValidationError("Portfolio configuration is invalid") from None
 
+    approval_gate = _resolve_approval_gate(
+        policy=policy,
+        approval_dsn=approval_dsn,
+        approval_gate_resolver=approval_gate_resolver,
+    )
+
     selected_reader = reader or collect_attribution_records
     try:
         records = selected_reader(storage_config_path)
@@ -244,6 +303,7 @@ def run_method_aware_portfolio_risk_limits(
     return {
         "run_id": str(uuid4()),
         "method_policy": method_policy_metadata(policy),
+        "model_approval_gate": model_approval_gate_metadata(approval_gate),
         "portfolio_id": policy.portfolio_id,
         "definition_fingerprint": definition.fingerprint,
         "selection": dict(output.diagnostics),
@@ -305,6 +365,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             end_date=args.end_date,
             max_evaluations=args.max_evaluations,
             storage_config_path=args.storage_config,
+            approval_dsn=args.approval_dsn,
         )
         if args.summary_json is not None:
             _write_summary(args.summary_json, summary)
