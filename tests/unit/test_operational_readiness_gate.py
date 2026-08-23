@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timezone
 from pathlib import Path
 from typing import Any
 
@@ -92,7 +92,7 @@ def _calendar() -> MarketCalendar:
         valid_from=date(2026, 1, 1),
         valid_to=date(2027, 1, 1),
         session_weekdays=(0, 1, 2, 3, 4),
-        holidays=frozenset(),
+        holidays=frozenset({date(2026, 4, 1)}),
         regular_close_time=time(16, 0),
         early_closes={},
     )

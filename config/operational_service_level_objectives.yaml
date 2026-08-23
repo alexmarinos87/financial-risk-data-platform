@@ -1,0 +1,22 @@
+objective_policies:
+  us-tech-local-20-session:
+    operational_policy_id: us-tech-local
+    window_sessions: 20
+    minimum_observations: 10
+    targets:
+      schedule_completion_attainment:
+        source_metric_name: schedule_lag_sessions
+        success_threshold: 0
+        target_ratio: 0.95
+      market_freshness_attainment:
+        source_metric_name: market_freshness_exception_count
+        success_threshold: 0
+        target_ratio: 0.95
+      notification_retry_exhaustion_free_attainment:
+        source_metric_name: notification_retry_exhausted_count
+        success_threshold: 0
+        target_ratio: 0.99
+      notification_dead_letter_duration_attainment:
+        source_metric_name: notification_oldest_dead_letter_age_seconds
+        success_threshold: 900
+        target_ratio: 0.95
