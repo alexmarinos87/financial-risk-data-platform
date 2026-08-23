@@ -76,7 +76,10 @@ SELECT
     COUNT(attempt.attempt_id) FILTER (
         WHERE attempt.outcome = 'failed'
     ) AS failed_attempt_count,
-    BOOL_OR(attempt.outcome = 'succeeded') AS delivered,
+    COALESCE(
+        BOOL_OR(attempt.outcome = 'succeeded'),
+        FALSE
+    ) AS delivered,
     MAX(attempt.attempted_at) AS last_attempted_at,
     MAX(attempt.http_status) FILTER (
         WHERE attempt.attempt_number = (
