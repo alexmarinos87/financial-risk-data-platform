@@ -15,6 +15,7 @@ def test_storage_config_valid():
         "daily_returns",
         "daily_volatility",
         "daily_risk_summary",
+        "daily_market_freshness",
         "portfolio_daily_returns",
         "portfolio_daily_risk_summary",
         "portfolio_risk_attribution",
