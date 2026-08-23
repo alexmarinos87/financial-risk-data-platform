@@ -8,7 +8,7 @@ import subprocess
 import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -68,9 +68,11 @@ class LocalPortfolioSchedule:
             "volatility_window": self.volatility_window,
         }
         digest = hashlib.sha256(
-            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode(
-                "utf-8"
-            )
+            json.dumps(
+                payload,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
         ).hexdigest()[:24]
         return f"local-schedule-{digest}"
 
@@ -89,10 +91,16 @@ def _required_text(value: Any, label: str) -> str:
     return parsed
 
 
-def _positive_integer(value: Any, label: str, maximum: int) -> int:
-    if type(value) is not int or not 1 <= value <= maximum:
+def _bounded_integer(
+    value: Any,
+    label: str,
+    *,
+    minimum: int,
+    maximum: int,
+) -> int:
+    if type(value) is not int or not minimum <= value <= maximum:
         raise ValidationError(
-            f"{label} must be an integer between 1 and {maximum}"
+            f"{label} must be an integer between {minimum} and {maximum}"
         )
     return value
 
@@ -124,6 +132,7 @@ def parse_local_portfolio_schedule(
         or not 0 < float(confidence) < 1
     ):
         raise ValidationError("var_confidence must be between 0 and 1")
+
     return LocalPortfolioSchedule(
         schedule_id=schedule_id,
         enabled=enabled,
@@ -136,41 +145,48 @@ def parse_local_portfolio_schedule(
             candidate.get("calendar_id"),
             "calendar_id",
         ),
-        maximum_catch_up_sessions=_positive_integer(
+        maximum_catch_up_sessions=_bounded_integer(
             candidate.get("maximum_catch_up_sessions"),
             "maximum_catch_up_sessions",
-            MAX_CATCH_UP_SESSIONS,
+            minimum=1,
+            maximum=MAX_CATCH_UP_SESSIONS,
         ),
-        volatility_window=_positive_integer(
+        volatility_window=_bounded_integer(
             candidate.get("volatility_window"),
             "volatility_window",
-            10_000,
+            minimum=2,
+            maximum=10_000,
         ),
-        var_window=_positive_integer(
+        var_window=_bounded_integer(
             candidate.get("var_window"),
             "var_window",
-            10_000,
+            minimum=2,
+            maximum=10_000,
         ),
         var_confidence=float(confidence),
-        covariance_window=_positive_integer(
+        covariance_window=_bounded_integer(
             candidate.get("covariance_window"),
             "covariance_window",
-            2_520,
+            minimum=2,
+            maximum=2_520,
         ),
-        max_snapshots=_positive_integer(
+        max_snapshots=_bounded_integer(
             candidate.get("max_snapshots"),
             "max_snapshots",
-            2_500,
+            minimum=1,
+            maximum=2_500,
         ),
-        max_evaluations=_positive_integer(
+        max_evaluations=_bounded_integer(
             candidate.get("max_evaluations"),
             "max_evaluations",
-            10_000,
+            minimum=1,
+            maximum=10_000,
         ),
-        max_notification_events=_positive_integer(
+        max_notification_events=_bounded_integer(
             candidate.get("max_notification_events"),
             "max_notification_events",
-            5_000,
+            minimum=1,
+            maximum=5_000,
         ),
     )
 
@@ -268,7 +284,7 @@ def plan_schedule_sessions(
     if checkpoint == latest_expected:
         return ()
     candidates = calendar.sessions_between(
-        checkpoint.fromordinal(checkpoint.toordinal() + 1),
+        checkpoint + timedelta(days=1),
         latest_expected,
     )
     if len(candidates) > schedule.maximum_catch_up_sessions:
@@ -314,57 +330,57 @@ def build_session_commands(
                 "local scheduling currently supports alpha_vantage constituents only"
             )
         symbol = constituent.symbol
-        commands.append(
-            (
-                python_executable,
-                "-m",
-                "src.orchestration.run_daily_risk",
-                "--symbol",
-                symbol,
-                "--start-date",
-                session,
-                "--end-date",
-                session,
-                "--vol-window",
-                str(schedule.volatility_window),
-                "--var-window",
-                str(schedule.var_window),
-                "--var-confidence",
-                str(schedule.var_confidence),
-                "--storage-config",
-                str(storage_config_path),
-                "--summary-json",
-                _summary_path(
-                    state_dir,
-                    schedule.schedule_id,
-                    session_date,
-                    f"daily-risk-{symbol}",
+        commands.extend(
+            [
+                (
+                    python_executable,
+                    "-m",
+                    "src.orchestration.run_daily_risk",
+                    "--symbol",
+                    symbol,
+                    "--start-date",
+                    session,
+                    "--end-date",
+                    session,
+                    "--vol-window",
+                    str(schedule.volatility_window),
+                    "--var-window",
+                    str(schedule.var_window),
+                    "--var-confidence",
+                    str(schedule.var_confidence),
+                    "--storage-config",
+                    str(storage_config_path),
+                    "--summary-json",
+                    _summary_path(
+                        state_dir,
+                        schedule.schedule_id,
+                        session_date,
+                        f"daily-risk-{symbol}",
+                    ),
                 ),
-            )
-        )
-        commands.append(
-            (
-                python_executable,
-                "-m",
-                "src.orchestration.run_market_freshness",
-                "--symbol",
-                symbol,
-                "--calendar-id",
-                schedule.calendar_id,
-                "--calendar-config",
-                str(calendar_config_path),
-                "--as-of-date",
-                session,
-                "--storage-config",
-                str(storage_config_path),
-                "--summary-json",
-                _summary_path(
-                    state_dir,
-                    schedule.schedule_id,
-                    session_date,
-                    f"freshness-{symbol}",
+                (
+                    python_executable,
+                    "-m",
+                    "src.orchestration.run_market_freshness",
+                    "--symbol",
+                    symbol,
+                    "--calendar-id",
+                    schedule.calendar_id,
+                    "--calendar-config",
+                    str(calendar_config_path),
+                    "--as-of-date",
+                    session,
+                    "--storage-config",
+                    str(storage_config_path),
+                    "--summary-json",
+                    _summary_path(
+                        state_dir,
+                        schedule.schedule_id,
+                        session_date,
+                        f"freshness-{symbol}",
+                    ),
                 ),
-            )
+            ]
         )
 
     commands.append(
@@ -527,6 +543,7 @@ def run_local_portfolio_schedule(
     )
     state_path = _state_path(state_dir, schedule.schedule_id)
     state = _read_state(state_path)
+    checkpoint_before = _checkpoint_date(state, schedule=schedule)
     sessions = plan_schedule_sessions(
         schedule=schedule,
         calendar=calendar,
@@ -534,7 +551,7 @@ def run_local_portfolio_schedule(
         state=state,
     )
     selected_mandate_loader = mandate_loader or load_portfolio_mandate
-    plans = []
+    plans: list[dict[str, Any]] = []
     for session_date in sessions:
         mandate = selected_mandate_loader(
             portfolio_config_path,
@@ -573,8 +590,8 @@ def run_local_portfolio_schedule(
         "selection": {
             "as_of_date": as_of_date.isoformat(),
             "checkpoint_before": (
-                _checkpoint_date(state, schedule=schedule).isoformat()
-                if state is not None
+                checkpoint_before.isoformat()
+                if checkpoint_before is not None
                 else None
             ),
             "sessions_selected": len(sessions),
@@ -619,8 +636,8 @@ def run_local_portfolio_schedule(
                 "local schedule did not acquire exactly one lock"
             )
         for session_date, plan in zip(sessions, plans, strict=True):
-            for command in plan["commands"]:
-                selected_runner(tuple(command), environment)
+            for raw_command in plan["commands"]:
+                selected_runner(tuple(raw_command), environment)
             _write_state(
                 state_path,
                 schedule=schedule,
