@@ -4,6 +4,7 @@ import argparse
 import os
 import sys
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 from src.analytics.operational_service_levels import (
@@ -11,9 +12,13 @@ from src.analytics.operational_service_levels import (
     parse_operational_service_level_policy,
 )
 from src.common.exceptions import ValidationError
+from src.warehouse.operational_service_level_objective_contract_check import (
+    run_contract_check as run_objective_contract_check,
+)
 from src.warehouse.operational_service_level_recorder import (
     record_operational_service_level_report,
 )
+from src.warehouse.postgres_consistency import run_consistency_checks
 from src.warehouse.postgres_loader import DEFAULT_POSTGRES_DSN
 
 
@@ -223,6 +228,24 @@ def run_contract_check(dsn: str) -> dict[str, Any]:
         else:
             raise AssertionError("operational report delete was not blocked")
 
+    objective_result = run_objective_contract_check(dsn)
+    objective_consistency = run_consistency_checks(
+        dsn=dsn,
+        check_paths=(
+            Path(
+                "sql/operational_service_level_objectives_consistency_checks.sql"
+            ),
+        ),
+    )
+    objective_failures = [
+        result for result in objective_consistency if result.status != "pass"
+    ]
+    if objective_failures:
+        names = ", ".join(result.check_name for result in objective_failures)
+        raise AssertionError(
+            "operational objective reconciliation failed: " + names
+        )
+
     return {
         "first_calculation_id": first_report["calculation_id"],
         "second_calculation_id": second_report["calculation_id"],
@@ -232,6 +255,8 @@ def run_contract_check(dsn: str) -> dict[str, Any]:
         "append_only_verified": True,
         "replay_verified": True,
         "conflict_verified": True,
+        "objective_contract": objective_result,
+        "objective_consistency_checks": len(objective_consistency),
     }
 
 
@@ -258,7 +283,8 @@ def main() -> int:
         return 1
     print(
         "Operational service-level PostgreSQL contract passed: "
-        f"{result['report_rows']} reports, {result['metric_rows']} metrics"
+        f"{result['report_rows']} reports, {result['metric_rows']} metrics, "
+        f"{result['objective_consistency_checks']} objective checks"
     )
     return 0
 
