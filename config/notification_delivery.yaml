@@ -1,0 +1,8 @@
+delivery:
+  webhook:
+    enabled: false
+    endpoint_env: RISK_NOTIFICATION_WEBHOOK_URL
+    timeout_seconds: 5
+    max_batch_events: 25
+    max_attempts_per_event: 3
+    initial_backoff_seconds: 1
