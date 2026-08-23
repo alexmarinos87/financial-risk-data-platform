@@ -1,0 +1,14 @@
+schedules:
+  us-tech-local:
+    enabled: false
+    portfolio_id: us-tech-equal
+    policy_id: us-tech-standard
+    calendar_id: XNYS
+    maximum_catch_up_sessions: 5
+    volatility_window: 20
+    var_window: 60
+    var_confidence: 0.95
+    covariance_window: 20
+    max_snapshots: 5
+    max_evaluations: 100
+    max_notification_events: 100
