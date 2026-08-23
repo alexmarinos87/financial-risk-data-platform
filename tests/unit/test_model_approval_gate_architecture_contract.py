@@ -24,7 +24,7 @@ def test_model_approval_gate_is_documented_at_the_runtime_boundary() -> None:
         assert required in documentation
 
     assert "resolve_model_approval_gate" in runner
-    assert runner.index("_resolve_approval_gate(") < runner.index(
+    assert runner.index("approval_gate = _resolve_approval_gate(") < runner.index(
         "selected_reader = reader or collect_attribution_records"
     )
     assert "missing_gate_rejected" in contract_check
