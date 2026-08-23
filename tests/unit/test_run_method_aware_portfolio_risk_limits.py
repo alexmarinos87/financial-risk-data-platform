@@ -24,10 +24,16 @@ from src.analytics.portfolio_risk_limit_policies import (
     EffectiveDatedPortfolioRiskLimitPolicy,
 )
 from src.analytics.portfolio_risk_limits import RiskLimitThresholds
-from src.common.exceptions import StorageError
+from src.common.exceptions import StorageError, ValidationError
 from src.orchestration.run_method_aware_portfolio_risk_limits import (
     OUTPUT_DATASET,
     run_method_aware_portfolio_risk_limits,
+)
+from src.warehouse.model_approval_contract import build_model_contract
+from src.warehouse.model_approval_gate import (
+    GATE_MODEL_VERSION,
+    RISK_LIMIT_USE_CASE,
+    ModelApprovalGateEvidence,
 )
 
 
@@ -75,6 +81,32 @@ def _policy() -> MethodAwarePortfolioRiskLimitPolicy:
         method_policy_id="us-tech-ewma",
         base_policy=base,
         method=EWMA_METHOD_CONTRACT,
+    )
+
+
+def _approval_evidence() -> ModelApprovalGateEvidence:
+    policy = _policy()
+    contract = build_model_contract(
+        attribution_model_version=policy.method.attribution_model_version,
+        weighting_method=policy.method.weighting_method,
+        covariance_method=policy.method.covariance_method,
+        correlation_method=policy.method.correlation_method,
+    )
+    return ModelApprovalGateEvidence(
+        gate_evidence_id="model-approval-gate-v1-test",
+        model_version=GATE_MODEL_VERSION,
+        use_case=RISK_LIMIT_USE_CASE,
+        method_policy_fingerprint=policy.fingerprint,
+        contract_fingerprint=contract.contract_fingerprint,
+        attribution_model_version=contract.attribution_model_version,
+        weighting_method=contract.weighting_method,
+        covariance_method=contract.covariance_method,
+        correlation_method=contract.correlation_method,
+        approval_required=True,
+        decision="approved",
+        approval_id="model-approval-v1-0123456789abcdef01234567",
+        approved_at=datetime(2026, 1, 10, 12, tzinfo=timezone.utc),
+        approved_by="model-risk@example.test",
     )
 
 
@@ -131,7 +163,22 @@ def _records() -> list[dict[str, object]]:
     ]
 
 
-def test_runner_publishes_method_bound_evaluations() -> None:
+def _runner_kwargs() -> dict[str, Any]:
+    return {
+        "method_policy_id": "us-tech-ewma",
+        "method_policies_config_path": Path("unused-methods.yaml"),
+        "limits_config_path": Path("unused-limits.yaml"),
+        "portfolio_config_path": Path("unused-portfolios.yaml"),
+        "end_date": date(2026, 1, 20),
+        "storage_config_path": Path("unused-storage.yaml"),
+        "storage_config_loader": lambda _: _storage_config(),
+        "definition_loader": lambda *_: _definition(),
+        "method_policy_loader": lambda **_: _policy(),
+        "approval_gate_resolver": lambda **_: _approval_evidence(),
+    }
+
+
+def test_runner_publishes_method_bound_evaluations_after_approval() -> None:
     writes: list[dict[str, Any]] = []
 
     def writer(
@@ -146,21 +193,17 @@ def test_runner_publishes_method_bound_evaluations() -> None:
         return 1
 
     summary = run_method_aware_portfolio_risk_limits(
-        method_policy_id="us-tech-ewma",
-        method_policies_config_path=Path("unused-methods.yaml"),
-        limits_config_path=Path("unused-limits.yaml"),
-        portfolio_config_path=Path("unused-portfolios.yaml"),
-        end_date=date(2026, 1, 20),
-        storage_config_path=Path("unused-storage.yaml"),
+        **_runner_kwargs(),
         reader=lambda _: _records(),
         writer=writer,
-        storage_config_loader=lambda _: _storage_config(),
-        definition_loader=lambda *_: _definition(),
-        method_policy_loader=lambda **_: _policy(),
     )
 
     assert summary["method_policy"]["method_policy_id"] == "us-tech-ewma"
     assert summary["method_policy"]["covariance_method"] == COVARIANCE_METHOD
+    assert summary["model_approval_gate"]["decision"] == "approved"
+    assert summary["model_approval_gate"]["approval_id"] == (
+        "model-approval-v1-0123456789abcdef01234567"
+    )
     assert summary["curated_output"][OUTPUT_DATASET] == {
         "records_selected": 2,
         "records_written": 2,
@@ -175,17 +218,9 @@ def test_runner_publishes_method_bound_evaluations() -> None:
 
 def test_runner_reports_replay_without_duplicate_publication() -> None:
     summary = run_method_aware_portfolio_risk_limits(
-        method_policy_id="us-tech-ewma",
-        method_policies_config_path=Path("unused-methods.yaml"),
-        limits_config_path=Path("unused-limits.yaml"),
-        portfolio_config_path=Path("unused-portfolios.yaml"),
-        end_date=date(2026, 1, 20),
-        storage_config_path=Path("unused-storage.yaml"),
+        **_runner_kwargs(),
         reader=lambda _: _records(),
         writer=lambda *_args, **_kwargs: 0,
-        storage_config_loader=lambda _: _storage_config(),
-        definition_loader=lambda *_: _definition(),
-        method_policy_loader=lambda **_: _policy(),
     )
 
     assert summary["curated_output"][OUTPUT_DATASET][
@@ -193,38 +228,53 @@ def test_runner_reports_replay_without_duplicate_publication() -> None:
     ] == 2
 
 
+def test_runner_fails_approval_before_attribution_read_or_publication() -> None:
+    reads = 0
+    writes = 0
+
+    def reader(_: Path) -> list[dict[str, object]]:
+        nonlocal reads
+        reads += 1
+        return _records()
+
+    def writer(*_args: Any, **_kwargs: Any) -> int:
+        nonlocal writes
+        writes += 1
+        return 1
+
+    kwargs = _runner_kwargs()
+    kwargs["approval_gate_resolver"] = lambda **_: (_ for _ in ()).throw(
+        ValidationError("current approval missing")
+    )
+    with pytest.raises(ValidationError, match="current approval missing"):
+        run_method_aware_portfolio_risk_limits(
+            **kwargs,
+            reader=reader,
+            writer=writer,
+        )
+
+    assert reads == 0
+    assert writes == 0
+
+
 def test_runner_rejects_invalid_writer_result() -> None:
     with pytest.raises(StorageError, match="invalid result"):
         run_method_aware_portfolio_risk_limits(
-            method_policy_id="us-tech-ewma",
-            method_policies_config_path=Path("unused-methods.yaml"),
-            limits_config_path=Path("unused-limits.yaml"),
-            portfolio_config_path=Path("unused-portfolios.yaml"),
-            end_date=date(2026, 1, 20),
-            storage_config_path=Path("unused-storage.yaml"),
+            **_runner_kwargs(),
             reader=lambda _: _records(),
             writer=lambda *_args, **_kwargs: 2,
-            storage_config_loader=lambda _: _storage_config(),
-            definition_loader=lambda *_: _definition(),
-            method_policy_loader=lambda **_: _policy(),
         )
 
 
 def test_runner_requires_output_dataset() -> None:
     config = _storage_config()
     del config["storage"]["curated"]["datasets"][OUTPUT_DATASET]
+    kwargs = _runner_kwargs()
+    kwargs["storage_config_loader"] = lambda _: config
 
     with pytest.raises(StorageError, match="missing method-aware"):
         run_method_aware_portfolio_risk_limits(
-            method_policy_id="us-tech-ewma",
-            method_policies_config_path=Path("unused-methods.yaml"),
-            limits_config_path=Path("unused-limits.yaml"),
-            portfolio_config_path=Path("unused-portfolios.yaml"),
-            end_date=date(2026, 1, 20),
-            storage_config_path=Path("unused-storage.yaml"),
+            **kwargs,
             reader=lambda _: _records(),
             writer=lambda *_args, **_kwargs: 1,
-            storage_config_loader=lambda _: config,
-            definition_loader=lambda *_: _definition(),
-            method_policy_loader=lambda **_: _policy(),
         )
