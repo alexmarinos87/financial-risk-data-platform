@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from src.common.exceptions import ValidationError
+from src.warehouse.model_approval_gate import resolve_model_approval_gate
 from src.warehouse.model_approval_registry import (
     DEFAULT_POSTGRES_DSN,
     approve_model_contract,
@@ -15,10 +16,34 @@ from src.warehouse.model_approval_registry import (
 )
 
 USE_CASE = "portfolio-risk-limit-evaluation"
+METHOD_POLICY_FINGERPRINT = "risk-limit-method-policy-contract-check"
 EWMA_MODEL_VERSION = "portfolio-attribution-ewma-v1"
 WEIGHTING_METHOD = "constant_weight_daily_rebalanced"
 COVARIANCE_METHOD = "ewma_zero_mean_lambda_0_94_annualized"
 CORRELATION_METHOD = "implied_from_ewma_covariance"
+
+
+def _resolve_gate(*, dsn: str):
+    return resolve_model_approval_gate(
+        method_policy_fingerprint=METHOD_POLICY_FINGERPRINT,
+        attribution_model_version=EWMA_MODEL_VERSION,
+        weighting_method=WEIGHTING_METHOD,
+        covariance_method=COVARIANCE_METHOD,
+        correlation_method=CORRELATION_METHOD,
+        dsn=dsn,
+    )
+
+
+def _expect_gate_rejection(*, dsn: str, message: str) -> None:
+    try:
+        _resolve_gate(dsn=dsn)
+    except ValidationError as exc:
+        if message not in str(exc):
+            raise RuntimeError(
+                "model approval gate failed with an unexpected reason"
+            ) from exc
+        return
+    raise RuntimeError("model approval gate unexpectedly accepted the request")
 
 
 def _expect_append_only_rejection(
@@ -47,6 +72,8 @@ def run_model_approval_contract_check(*, dsn: str) -> dict[str, Any]:
     revoked_at = datetime(2026, 2, 10, 12, tzinfo=timezone.utc)
     second_approved_at = datetime(2026, 3, 10, 12, tzinfo=timezone.utc)
 
+    _expect_gate_rejection(dsn=dsn, message="current model approval is required")
+
     first = approve_model_contract(
         dsn=dsn,
         use_case_name=USE_CASE,
@@ -74,6 +101,10 @@ def run_model_approval_contract_check(*, dsn: str) -> dict[str, Any]:
     if first_retry["created"] or first_retry["approval_id"] != first["approval_id"]:
         raise RuntimeError("model approval retry did not converge")
 
+    first_gate = _resolve_gate(dsn=dsn)
+    if first_gate.approval_id != first["approval_id"]:
+        raise RuntimeError("model approval gate did not bind the first approval")
+
     revocation = revoke_model_approval(
         dsn=dsn,
         approval_id=str(first["approval_id"]),
@@ -96,6 +127,8 @@ def run_model_approval_contract_check(*, dsn: str) -> dict[str, Any]:
     ):
         raise RuntimeError("model approval revocation retry did not converge")
 
+    _expect_gate_rejection(dsn=dsn, message="current model approval is revoked")
+
     second = approve_model_contract(
         dsn=dsn,
         use_case_name=USE_CASE,
@@ -108,6 +141,11 @@ def run_model_approval_contract_check(*, dsn: str) -> dict[str, Any]:
         reason="Reapprove the same immutable model contract after review.",
         approved_at=second_approved_at,
     )
+    second_gate = _resolve_gate(dsn=dsn)
+    if second_gate.approval_id != second["approval_id"]:
+        raise RuntimeError("model approval gate did not bind the reapproval")
+    if second_gate.gate_evidence_id == first_gate.gate_evidence_id:
+        raise RuntimeError("model approval gate evidence did not change on reapproval")
 
     try:
         approve_model_contract(
@@ -198,11 +236,15 @@ def run_model_approval_contract_check(*, dsn: str) -> dict[str, Any]:
         "use_case": USE_CASE,
         "contract_fingerprint": second["contract_fingerprint"],
         "first_approval_id": first["approval_id"],
+        "first_gate_evidence_id": first_gate.gate_evidence_id,
         "revocation_id": revocation["revocation_id"],
         "current_approval_id": second["approval_id"],
+        "current_gate_evidence_id": second_gate.gate_evidence_id,
         "current_status": current[1],
         "approval_count": int(current[2]),
         "history_event_count": history_count,
+        "missing_gate_rejected": True,
+        "revoked_gate_rejected": True,
         "append_only_verified": True,
     }
 
@@ -210,8 +252,8 @@ def run_model_approval_contract_check(*, dsn: str) -> dict[str, Any]:
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Exercise model approval idempotency, revocation, current status "
-            "and append-only PostgreSQL triggers."
+            "Exercise model approval idempotency, revocation, current status, "
+            "runtime gating and append-only PostgreSQL triggers."
         )
     )
     parser.add_argument(
