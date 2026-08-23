@@ -238,15 +238,18 @@ def _freshness_exception_count(
 
     exceptions: list[str] = []
     for key in sorted(expected):
-        record = seen.get(key)
-        if record is None:
+        freshness_record = seen.get(key)
+        if freshness_record is None:
             exceptions.append(f"{key}:missing")
             continue
-        status = record.get("freshness_status")
+        status = freshness_record.get("freshness_status")
         if status not in {"current", "gap_detected", "stale"}:
             raise ValidationError("market freshness status is invalid")
-        as_of_date = _calendar_date(record.get("as_of_date"), "freshness as_of_date")
-        trailing = record.get("trailing_missing_session_count")
+        as_of_date = _calendar_date(
+            freshness_record.get("as_of_date"),
+            "freshness as_of_date",
+        )
+        trailing = freshness_record.get("trailing_missing_session_count")
         if type(trailing) is not int or trailing < 0:
             raise ValidationError(
                 "trailing_missing_session_count must be a non-negative integer"
