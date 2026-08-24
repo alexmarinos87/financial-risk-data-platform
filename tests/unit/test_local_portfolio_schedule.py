@@ -21,6 +21,7 @@ from src.orchestration.run_local_portfolio_schedule import (
     plan_schedule_sessions,
     run_local_portfolio_schedule,
 )
+from src.warehouse.local_schedule_run_recorder import validate_local_schedule_run
 
 
 def _schedule_payload(*, enabled: bool = False, maximum: int = 5):
@@ -164,6 +165,26 @@ def _execution_authority(*, enabled: bool) -> dict[str, Any]:
     )
 
 
+def _history_recorder(records: list[dict[str, Any]]):
+    def recorder(*, dsn: str, run: dict[str, Any]) -> dict[str, Any]:
+        assert dsn
+        validated = validate_local_schedule_run(run)
+        records.append(validated)
+        return {
+            "run_id": validated["run_id"],
+            "request_id": validated["request_id"],
+            "run_status": validated["run_status"],
+            "selected_session_count": validated["selected_session_count"],
+            "started_session_count": validated["started_session_count"],
+            "completed_session_count": validated["completed_session_count"],
+            "checkpoint_after": validated["checkpoint_after"],
+            "document_sha256": "f" * 64,
+            "created": True,
+        }
+
+    return recorder
+
+
 def test_initial_plan_uses_latest_expected_session_on_weekend() -> None:
     sessions = plan_schedule_sessions(
         schedule=_schedule(),
@@ -251,6 +272,7 @@ def test_dry_run_does_not_execute_or_create_state(tmp_path: Path) -> None:
     assert calls == []
     assert summary["execution"]["performed"] is False
     assert summary["execution_authority"] is None
+    assert summary["run_history"] is None
     assert summary["selection"]["session_dates"] == ["2026-01-09"]
     assert not (tmp_path / "state" / "us-tech-local.json").exists()
 
@@ -303,11 +325,12 @@ def test_disabled_schedule_refuses_authorized_execution_before_commands(
     assert calls == []
 
 
-def test_successful_authorized_execution_checkpoints_after_complete_session(
+def test_successful_authorized_execution_checkpoints_and_records_terminal_history(
     tmp_path: Path,
 ) -> None:
     calls: list[tuple[str, ...]] = []
     environments: list[dict[str, str]] = []
+    history: list[dict[str, Any]] = []
 
     def runner(command: tuple[str, ...], environment: Any) -> None:
         calls.append(command)
@@ -330,28 +353,35 @@ def test_successful_authorized_execution_checkpoints_after_complete_session(
         command_runner=runner,
         mandate_loader=lambda *_: _mandate(),
         calendar_loader=lambda *_: _calendar(),
+        run_history_recorder=_history_recorder(history),
     )
 
     state = json.loads(
-        (tmp_path / "state" / "us-tech-local.json").read_text(
-            encoding="utf-8"
-        )
+        (tmp_path / "state" / "us-tech-local.json").read_text(encoding="utf-8")
     )
     assert state["last_successful_session"] == "2026-01-09"
     assert summary["execution"]["completed_sessions"] == ["2026-01-09"]
     assert summary["execution_authority"] == authority
+    assert summary["run_history"]["run_status"] == "completed"
+    assert len(history) == 1
+    assert history[0]["request_id"] == authority["authority_id"]
+    assert history[0]["run_status"] == "completed"
+    assert history[0]["sessions"][0]["status"] == "completed"
+    assert history[0]["sessions"][0]["stages"][-1]["stage_name"] == "checkpoint"
     assert len(calls) == 9
     assert all(
         environment["WAREHOUSE_POSTGRES_DSN"] == "postgresql://secret-value"
         for environment in environments
     )
     assert "postgresql://secret-value" not in json.dumps(summary)
+    assert "postgresql://secret-value" not in json.dumps(history)
 
 
-def test_failed_authorized_command_does_not_advance_checkpoint(
+def test_failed_authorized_command_records_failure_without_advancing_checkpoint(
     tmp_path: Path,
 ) -> None:
     calls = 0
+    history: list[dict[str, Any]] = []
 
     def fail_after_first(command: tuple[str, ...], environment: Any) -> None:
         nonlocal calls
@@ -376,5 +406,16 @@ def test_failed_authorized_command_does_not_advance_checkpoint(
             command_runner=fail_after_first,
             mandate_loader=lambda *_: _mandate(),
             calendar_loader=lambda *_: _calendar(),
+            run_history_recorder=_history_recorder(history),
         )
     assert not (tmp_path / "state" / "us-tech-local.json").exists()
+    assert len(history) == 1
+    assert history[0]["run_status"] == "failed"
+    assert history[0]["failure_code"] == "command_failed"
+    assert history[0]["failed_stage_index"] == 1
+    assert history[0]["sessions"][0]["status"] == "failed"
+    assert [stage["status"] for stage in history[0]["sessions"][0]["stages"]] == [
+        "completed",
+        "failed",
+    ]
+    assert history[0]["checkpoint_after"] is None
