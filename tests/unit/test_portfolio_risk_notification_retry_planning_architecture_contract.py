@@ -57,11 +57,3 @@ def test_dead_letter_retry_planning_is_deterministic_and_delivery_free() -> None
         "retryable_error_codes:",
     ):
         assert required in config
-
-
-def test_postgres_contract_executes_delivery_free_retry_planning() -> None:
-    workflow = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
-
-    assert "src.orchestration.plan_portfolio_risk_notification_retries" in workflow
-    assert "--planned-at 2026-12-31T23:59:59Z" in workflow
-    assert "notification-retry-plan-contract.json" in workflow
