@@ -12,6 +12,9 @@ from src.analytics.operational_service_levels import (
     parse_operational_service_level_policy,
 )
 from src.common.exceptions import ValidationError
+from src.warehouse.operational_readiness_decision_contract_check import (
+    run_contract_check as run_readiness_contract_check,
+)
 from src.warehouse.operational_service_level_objective_contract_check import (
     run_contract_check as run_objective_contract_check,
 )
@@ -246,6 +249,14 @@ def run_contract_check(dsn: str) -> dict[str, Any]:
             "operational objective reconciliation failed: " + names
         )
 
+    readiness_result = run_readiness_contract_check(
+        dsn=dsn,
+        first_report=first_report,
+        first_document_sha256=str(first["document_sha256"]),
+        second_report=second_report,
+        second_document_sha256=str(second["document_sha256"]),
+    )
+
     return {
         "first_calculation_id": first_report["calculation_id"],
         "second_calculation_id": second_report["calculation_id"],
@@ -257,6 +268,7 @@ def run_contract_check(dsn: str) -> dict[str, Any]:
         "conflict_verified": True,
         "objective_contract": objective_result,
         "objective_consistency_checks": len(objective_consistency),
+        "readiness_contract": readiness_result,
     }
 
 
@@ -281,10 +293,12 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
+    readiness = result["readiness_contract"]
     print(
         "Operational service-level PostgreSQL contract passed: "
         f"{result['report_rows']} reports, {result['metric_rows']} metrics, "
-        f"{result['objective_consistency_checks']} objective checks"
+        f"{result['objective_consistency_checks']} objective checks, "
+        f"{readiness['consistency_checks']} readiness checks"
     )
     return 0
 
