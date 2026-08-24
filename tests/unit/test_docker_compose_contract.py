@@ -41,6 +41,7 @@ def test_local_database_seed_mounts_are_read_only_and_ordered() -> None:
         "./sql/operational_service_level_objectives_schema.sql:/docker-entrypoint-initdb.d/14_operational_service_level_objectives_schema.sql:ro",
         "./sql/operational_readiness_decisions_schema.sql:/docker-entrypoint-initdb.d/15_operational_readiness_decisions_schema.sql:ro",
         "./sql/operational_review_schema.sql:/docker-entrypoint-initdb.d/16_operational_review_schema.sql:ro",
+        "./sql/operational_readiness_overrides_schema.sql:/docker-entrypoint-initdb.d/17_operational_readiness_overrides_schema.sql:ro",
     ]
     assert services["mongo"]["volumes"] == [
         "./mongo/init:/docker-entrypoint-initdb.d:ro"

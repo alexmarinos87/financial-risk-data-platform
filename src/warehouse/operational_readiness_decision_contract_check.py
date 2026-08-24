@@ -13,6 +13,9 @@ from src.warehouse.operational_readiness_gate import (
     OperationalReadinessGatePolicy,
     evaluate_operational_readiness,
 )
+from src.warehouse.operational_readiness_override_contract_check import (
+    run_contract_check as run_override_contract_check,
+)
 from src.warehouse.postgres_consistency import run_consistency_checks
 
 
@@ -235,6 +238,12 @@ def run_contract_check(
         names = ", ".join(result.check_name for result in review_failures)
         raise AssertionError("operational review reconciliation failed: " + names)
 
+    override_result = run_override_contract_check(
+        dsn=dsn,
+        blocked_decision_id=str(second_decision["decision_id"]),
+        allowed_decision_id=str(first_decision["decision_id"]),
+    )
+
     return {
         "first_decision_id": first_decision["decision_id"],
         "second_decision_id": second_decision["decision_id"],
@@ -247,4 +256,5 @@ def run_contract_check(
         "operational_review_health_status": "blocked",
         "operational_review_exception_rows": 3,
         "operational_review_consistency_checks": len(review_consistency),
+        "override_contract": override_result,
     }
