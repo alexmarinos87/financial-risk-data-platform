@@ -23,6 +23,7 @@ services:
       - ./sql/operational_service_levels_schema.sql:/docker-entrypoint-initdb.d/13_operational_service_levels_schema.sql:ro
       - ./sql/operational_service_level_objectives_schema.sql:/docker-entrypoint-initdb.d/14_operational_service_level_objectives_schema.sql:ro
       - ./sql/operational_readiness_decisions_schema.sql:/docker-entrypoint-initdb.d/15_operational_readiness_decisions_schema.sql:ro
+      - ./sql/operational_review_schema.sql:/docker-entrypoint-initdb.d/16_operational_review_schema.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U risk_user -d risk_platform"]
       interval: 5s
