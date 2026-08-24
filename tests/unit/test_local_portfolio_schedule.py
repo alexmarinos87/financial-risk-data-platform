@@ -11,6 +11,9 @@ import yaml
 from src.analytics.market_calendar import parse_market_calendar
 from src.analytics.portfolio_mandates import select_portfolio_mandate
 from src.common.exceptions import StorageError, ValidationError
+from src.orchestration.operational_readiness_execution_authority import (
+    build_operational_readiness_execution_authority,
+)
 from src.orchestration.run_local_portfolio_schedule import (
     MODEL_VERSION,
     build_session_commands,
@@ -112,6 +115,55 @@ def _write_schedule(tmp_path: Path, *, enabled: bool, maximum: int = 5) -> Path:
     return path
 
 
+def _execution_authority(*, enabled: bool) -> dict[str, Any]:
+    schedule = _schedule(enabled=enabled)
+    calendar = _calendar()
+    mandate = _mandate()
+    return build_operational_readiness_execution_authority(
+        plan={
+            "plan_id": "readiness-aware-schedule-plan-v1-plan-" + "a" * 24,
+            "model_version": "readiness-aware-schedule-plan-v1",
+            "schedule_id": schedule.schedule_id,
+            "schedule_fingerprint": schedule.fingerprint,
+            "portfolio_id": schedule.portfolio_id,
+            "risk_limit_policy_id": schedule.policy_id,
+            "mandate_id": mandate.mandate_id,
+            "mandate_fingerprint": mandate.fingerprint,
+            "as_of_date": "2026-01-10",
+            "latest_expected_session": "2026-01-09",
+            "readiness": {
+                "status": "current",
+                "decision_id": (
+                    "operational-readiness-gate-v1-decision-" + "b" * 24
+                ),
+                "decision": "allow",
+                "reasons": [],
+                "document_sha256": "c" * 64,
+                "gate_id": "us-tech-local",
+                "gate_fingerprint": (
+                    "operational-readiness-gate-" + "d" * 24
+                ),
+                "operational_policy_id": "us-tech-local",
+                "operational_policy_fingerprint": (
+                    "operational-slo-policy-" + "e" * 24
+                ),
+            },
+            "schedule_plan": {
+                "calendar": {
+                    "calendar_id": calendar.calendar_id,
+                    "calendar_fingerprint": calendar.fingerprint,
+                }
+            },
+            "schedule_effect": {
+                "decision": "would_run",
+                "sessions_selected": 1,
+                "session_dates": ["2026-01-09"],
+            },
+        },
+        authorized_at="2026-01-10T12:00:00Z",
+    )
+
+
 def test_initial_plan_uses_latest_expected_session_on_weekend() -> None:
     sessions = plan_schedule_sessions(
         schedule=_schedule(),
@@ -198,17 +250,18 @@ def test_dry_run_does_not_execute_or_create_state(tmp_path: Path) -> None:
 
     assert calls == []
     assert summary["execution"]["performed"] is False
+    assert summary["execution_authority"] is None
     assert summary["selection"]["session_dates"] == ["2026-01-09"]
     assert not (tmp_path / "state" / "us-tech-local.json").exists()
 
 
-def test_disabled_schedule_refuses_execution_before_commands(tmp_path: Path) -> None:
+def test_direct_execution_without_authority_fails_before_commands(tmp_path: Path) -> None:
     calls: list[tuple[str, ...]] = []
-    with pytest.raises(ValidationError, match="disabled"):
+    with pytest.raises(ValidationError, match="requires exact"):
         run_local_portfolio_schedule(
             schedule_id="us-tech-local",
             as_of_date=date(2026, 1, 10),
-            schedule_config_path=_write_schedule(tmp_path, enabled=False),
+            schedule_config_path=_write_schedule(tmp_path, enabled=True),
             calendar_config_path=Path("calendar.yaml"),
             portfolio_config_path=Path("portfolios.yaml"),
             risk_limit_config_path=Path("limits.yaml"),
@@ -222,9 +275,37 @@ def test_disabled_schedule_refuses_execution_before_commands(tmp_path: Path) -> 
             calendar_loader=lambda *_: _calendar(),
         )
     assert calls == []
+    assert not (tmp_path / "state" / "us-tech-local.json").exists()
 
 
-def test_successful_execution_checkpoints_after_complete_session(tmp_path: Path) -> None:
+def test_disabled_schedule_refuses_authorized_execution_before_commands(
+    tmp_path: Path,
+) -> None:
+    calls: list[tuple[str, ...]] = []
+    with pytest.raises(ValidationError, match="disabled"):
+        run_local_portfolio_schedule(
+            schedule_id="us-tech-local",
+            as_of_date=date(2026, 1, 10),
+            schedule_config_path=_write_schedule(tmp_path, enabled=False),
+            calendar_config_path=Path("calendar.yaml"),
+            portfolio_config_path=Path("portfolios.yaml"),
+            risk_limit_config_path=Path("limits.yaml"),
+            storage_config_path=Path("storage.yaml"),
+            state_dir=tmp_path / "state",
+            dsn="dsn",
+            execute=True,
+            execution_authority=_execution_authority(enabled=False),
+            python_executable="python",
+            command_runner=lambda command, _: calls.append(command),
+            mandate_loader=lambda *_: _mandate(),
+            calendar_loader=lambda *_: _calendar(),
+        )
+    assert calls == []
+
+
+def test_successful_authorized_execution_checkpoints_after_complete_session(
+    tmp_path: Path,
+) -> None:
     calls: list[tuple[str, ...]] = []
     environments: list[dict[str, str]] = []
 
@@ -232,6 +313,7 @@ def test_successful_execution_checkpoints_after_complete_session(tmp_path: Path)
         calls.append(command)
         environments.append(dict(environment))
 
+    authority = _execution_authority(enabled=True)
     summary = run_local_portfolio_schedule(
         schedule_id="us-tech-local",
         as_of_date=date(2026, 1, 10),
@@ -243,6 +325,7 @@ def test_successful_execution_checkpoints_after_complete_session(tmp_path: Path)
         state_dir=tmp_path / "state",
         dsn="postgresql://secret-value",
         execute=True,
+        execution_authority=authority,
         python_executable="python",
         command_runner=runner,
         mandate_loader=lambda *_: _mandate(),
@@ -256,6 +339,7 @@ def test_successful_execution_checkpoints_after_complete_session(tmp_path: Path)
     )
     assert state["last_successful_session"] == "2026-01-09"
     assert summary["execution"]["completed_sessions"] == ["2026-01-09"]
+    assert summary["execution_authority"] == authority
     assert len(calls) == 9
     assert all(
         environment["WAREHOUSE_POSTGRES_DSN"] == "postgresql://secret-value"
@@ -264,7 +348,9 @@ def test_successful_execution_checkpoints_after_complete_session(tmp_path: Path)
     assert "postgresql://secret-value" not in json.dumps(summary)
 
 
-def test_failed_command_does_not_advance_checkpoint(tmp_path: Path) -> None:
+def test_failed_authorized_command_does_not_advance_checkpoint(
+    tmp_path: Path,
+) -> None:
     calls = 0
 
     def fail_after_first(command: tuple[str, ...], environment: Any) -> None:
@@ -285,6 +371,7 @@ def test_failed_command_does_not_advance_checkpoint(tmp_path: Path) -> None:
             state_dir=tmp_path / "state",
             dsn="dsn",
             execute=True,
+            execution_authority=_execution_authority(enabled=True),
             python_executable="python",
             command_runner=fail_after_first,
             mandate_loader=lambda *_: _mandate(),
