@@ -5,6 +5,9 @@ from pathlib import Path
 from typing import Any
 
 from src.common.exceptions import ValidationError
+from src.warehouse.local_schedule_run_contract_check import (
+    run_contract_check as run_local_schedule_run_contract_check,
+)
 from src.warehouse.operational_readiness_override_registry import (
     approve_operational_readiness_override,
     read_active_operational_readiness_override,
@@ -205,6 +208,13 @@ def run_contract_check(
         names = ", ".join(result.check_name for result in failures)
         raise AssertionError("readiness override reconciliation failed: " + names)
 
+    local_run_result = run_local_schedule_run_contract_check(
+        dsn=dsn,
+        allowed_decision_id=allowed_decision_id,
+        blocked_decision_id=blocked_decision_id,
+        active_override_id=str(second["override_id"]),
+    )
+
     return {
         "override_rows": 2,
         "revocation_rows": 1,
@@ -215,4 +225,5 @@ def run_contract_check(
         "expiry_verified": True,
         "append_only_verified": True,
         "consistency_checks": len(consistency),
+        "local_schedule_run_contract": local_run_result,
     }
