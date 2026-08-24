@@ -181,8 +181,14 @@ def test_base_validation_rejects_stale_sessions_and_tampered_identity() -> None:
 
 
 def test_base_validation_rejects_multiple_mandates_in_one_authority() -> None:
+    plan = _plan()
+    plan["schedule_effect"] = {
+        "decision": "would_run",
+        "sessions_selected": 2,
+        "session_dates": ["2026-01-08", "2026-01-09"],
+    }
     authority = build_operational_readiness_execution_authority(
-        plan=_plan(),
+        plan=plan,
         authorized_at="2026-01-10T12:00:00Z",
     )
     with pytest.raises(ValidationError, match="one mandate"):
