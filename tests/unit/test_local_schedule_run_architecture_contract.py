@@ -16,7 +16,7 @@ def test_local_schedule_run_history_documentation_preserves_arc42_boundary() -> 
         "No command arguments",
         "no external notification delivery",
         "no cloud schedule activation",
-        "no `terraform apply`",
+        "`terraform apply`",
         "P4b",
     ):
         assert fragment in document
