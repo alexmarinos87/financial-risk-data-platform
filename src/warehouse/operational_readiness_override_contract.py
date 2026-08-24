@@ -137,8 +137,13 @@ def build_operational_readiness_override(
     ):
         raise ValidationError("decision_document_sha256 is incompatible")
 
+    raw_decision_evaluated_at = decision.get("evaluated_at")
+    if not isinstance(raw_decision_evaluated_at, (datetime, str)):
+        raise ValidationError(
+            "decision.evaluated_at must be a timezone-aware timestamp"
+        )
     decision_evaluated_at = aware_utc(
-        decision.get("evaluated_at"),
+        raw_decision_evaluated_at,
         "decision.evaluated_at",
     )
     approval_time = aware_utc(approved_at, "approved_at")
