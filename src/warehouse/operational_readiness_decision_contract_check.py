@@ -196,6 +196,45 @@ def run_contract_check(
         names = ", ".join(result.check_name for result in failures)
         raise AssertionError("operational readiness reconciliation failed: " + names)
 
+    with psycopg.connect(dsn) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    (SELECT COUNT(*)
+                     FROM risk_platform.current_operational_health_summary),
+                    (SELECT health_status
+                     FROM risk_platform.current_operational_health_summary),
+                    (SELECT current_exception_count
+                     FROM risk_platform.current_operational_health_summary),
+                    (SELECT COUNT(*)
+                     FROM risk_platform.current_operational_exception_summary),
+                    (SELECT COUNT(*)
+                     FROM risk_platform.recent_operational_readiness_decisions),
+                    (SELECT COUNT(*)
+                     FROM risk_platform.rolling_operational_objective_attainment),
+                    (SELECT COUNT(*)
+                     FROM risk_platform.operational_evidence_drillthrough)
+                """
+            )
+            review_counts = cursor.fetchone()
+            if review_counts != (1, "blocked", 3, 3, 2, 8, 10):
+                raise AssertionError(
+                    "operational review serving views are incompatible: "
+                    f"{review_counts!r}"
+                )
+
+    review_consistency = run_consistency_checks(
+        dsn=dsn,
+        check_paths=(Path("sql/operational_review_consistency_checks.sql"),),
+    )
+    review_failures = [
+        result for result in review_consistency if result.status != "pass"
+    ]
+    if review_failures:
+        names = ", ".join(result.check_name for result in review_failures)
+        raise AssertionError("operational review reconciliation failed: " + names)
+
     return {
         "first_decision_id": first_decision["decision_id"],
         "second_decision_id": second_decision["decision_id"],
@@ -205,4 +244,7 @@ def run_contract_check(
         "replay_verified": True,
         "conflict_verified": True,
         "consistency_checks": len(consistency),
+        "operational_review_health_status": "blocked",
+        "operational_review_exception_rows": 3,
+        "operational_review_consistency_checks": len(review_consistency),
     }
