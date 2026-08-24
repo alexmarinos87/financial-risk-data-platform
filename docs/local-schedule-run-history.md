@@ -38,9 +38,9 @@ terminal evidence.
 - ordered bounded stage outcomes for each started session; and
 - one stable failure code and failed session/stage identity where applicable.
 
-The execution-authority ID is the idempotency request key. Re-recording the exact
-same canonical document converges. Reusing that request identity with different
-evidence fails closed.
+The execution-authority ID is the idempotency request key. Exact retries converge
+when the canonical document is unchanged. Reusing that request identity with
+different evidence fails closed.
 
 ## Session And Stage Semantics
 
