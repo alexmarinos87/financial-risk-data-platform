@@ -69,6 +69,12 @@ jobs:
           --check sql/model_approval_consistency_checks.sql
       - run: python -m src.warehouse.operational_service_level_contract_check
       - run: >-
+          python -m src.orchestration.plan_portfolio_risk_notification_retries
+          --planned-at 2026-12-31T23:59:59Z
+          --policy-id us-tech-standard
+          --portfolio-id us-tech-equal
+          --summary-json .demo/notification-retry-plan-contract.json
+      - run: >-
           python -m src.warehouse.postgres_consistency
           --check sql/operational_service_levels_consistency_checks.sql
       - if: failure()
