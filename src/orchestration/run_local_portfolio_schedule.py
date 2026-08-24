@@ -20,6 +20,10 @@ from ..analytics.portfolio_mandates import (
 )
 from ..common.config import load_yaml
 from ..common.exceptions import OverlapError, StorageError, ValidationError
+from ..warehouse.local_schedule_run_recorder import (
+    build_local_schedule_run_id,
+    record_local_schedule_run,
+)
 from ..warehouse.postgres_loader import DEFAULT_POSTGRES_DSN
 from .locks import acquire_partition_locks, release_partition_locks
 from .operational_readiness_execution_authority import (
@@ -34,6 +38,8 @@ Command = tuple[str, ...]
 CommandRunner = Callable[[Command, Mapping[str, str]], None]
 MandateLoader = Callable[[Path, str, date], PortfolioMandate]
 CalendarLoader = Callable[[Path, str], MarketCalendar]
+RunHistoryRecorder = Callable[..., Mapping[str, Any]]
+Clock = Callable[[], datetime]
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,9 +128,7 @@ def parse_local_portfolio_schedule(
         )
     candidate = schedules.get(schedule_id)
     if not isinstance(candidate, Mapping):
-        raise ValidationError(
-            f"local schedule '{schedule_id}' is not configured"
-        )
+        raise ValidationError(f"local schedule '{schedule_id}' is not configured")
     enabled = candidate.get("enabled")
     if type(enabled) is not bool:
         raise ValidationError("schedule enabled must be boolean")
@@ -139,15 +143,9 @@ def parse_local_portfolio_schedule(
     return LocalPortfolioSchedule(
         schedule_id=schedule_id,
         enabled=enabled,
-        portfolio_id=_required_text(
-            candidate.get("portfolio_id"),
-            "portfolio_id",
-        ),
+        portfolio_id=_required_text(candidate.get("portfolio_id"), "portfolio_id"),
         policy_id=_required_text(candidate.get("policy_id"), "policy_id"),
-        calendar_id=_required_text(
-            candidate.get("calendar_id"),
-            "calendar_id",
-        ),
+        calendar_id=_required_text(candidate.get("calendar_id"), "calendar_id"),
         maximum_catch_up_sessions=_bounded_integer(
             candidate.get("maximum_catch_up_sessions"),
             "maximum_catch_up_sessions",
@@ -194,16 +192,11 @@ def parse_local_portfolio_schedule(
     )
 
 
-def load_local_portfolio_schedule(
-    path: Path,
-    schedule_id: str,
-) -> LocalPortfolioSchedule:
+def load_local_portfolio_schedule(path: Path, schedule_id: str) -> LocalPortfolioSchedule:
     try:
         payload = load_yaml(path)
     except Exception:
-        raise ValidationError(
-            "local schedule configuration could not be loaded"
-        ) from None
+        raise ValidationError("local schedule configuration could not be loaded") from None
     if not isinstance(payload, Mapping):
         raise ValidationError("local schedule configuration must be a mapping")
     return parse_local_portfolio_schedule(payload, schedule_id)
@@ -251,19 +244,13 @@ def _checkpoint_date(
         )
     raw = state.get("last_successful_session")
     if not isinstance(raw, str):
-        raise ValidationError(
-            "local schedule state is missing last_successful_session"
-        )
+        raise ValidationError("local schedule state is missing last_successful_session")
     try:
         parsed = date.fromisoformat(raw)
     except ValueError:
-        raise ValidationError(
-            "local schedule checkpoint must use YYYY-MM-DD"
-        ) from None
+        raise ValidationError("local schedule checkpoint must use YYYY-MM-DD") from None
     if raw != parsed.isoformat():
-        raise ValidationError(
-            "local schedule checkpoint must use YYYY-MM-DD"
-        )
+        raise ValidationError("local schedule checkpoint must use YYYY-MM-DD")
     return parsed
 
 
@@ -286,10 +273,7 @@ def plan_schedule_sessions(
         )
     if checkpoint == latest_expected:
         return ()
-    candidates = calendar.sessions_between(
-        checkpoint + timedelta(days=1),
-        latest_expected,
-    )
+    candidates = calendar.sessions_between(checkpoint + timedelta(days=1), latest_expected)
     if len(candidates) > schedule.maximum_catch_up_sessions:
         raise ValidationError(
             "local schedule catch-up exceeds maximum_catch_up_sessions; "
@@ -472,18 +456,11 @@ def build_session_commands(
     return tuple(commands)
 
 
-def _default_command_runner(
-    command: Command,
-    environment: Mapping[str, str],
-) -> None:
+def _default_command_runner(command: Command, environment: Mapping[str, str]) -> None:
     merged_environment = dict(os.environ)
     merged_environment.update(environment)
     try:
-        subprocess.run(
-            list(command),
-            check=True,
-            env=merged_environment,
-        )
+        subprocess.run(list(command), check=True, env=merged_environment)
     except (OSError, subprocess.CalledProcessError):
         raise StorageError(
             "local portfolio schedule command failed; checkpoint was not advanced"
@@ -518,6 +495,103 @@ def _write_state(
         raise StorageError("unable to update local schedule checkpoint") from None
 
 
+def _clock_value(clock: Clock) -> datetime:
+    value = clock()
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise StorageError("local schedule execution clock must be timezone-aware")
+    return value.astimezone(timezone.utc)
+
+
+def _command_stage_name(command: Sequence[str]) -> str:
+    if len(command) >= 3 and command[1] == "-m":
+        name = command[2].rsplit(".", 1)[-1]
+        if "--symbol" in command:
+            index = command.index("--symbol")
+            if index + 1 < len(command):
+                name = f"{name}:{command[index + 1]}"
+        return name
+    if len(command) >= 2 and command[0] == "make":
+        return f"make:{command[1]}"
+    return command[0] if command else "unknown-stage"
+
+
+def _selected_session_outcomes(plans: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "session_date": str(plan["session_date"]),
+            "mandate_id": str(plan["mandate_id"]),
+            "mandate_fingerprint": str(plan["mandate_fingerprint"]),
+            "status": "selected",
+            "started_at": None,
+            "finished_at": None,
+            "checkpoint_after": None,
+            "failed_stage_index": None,
+            "failed_stage_name": None,
+            "failure_code": None,
+            "stages": [],
+        }
+        for plan in plans
+    ]
+
+
+def _terminal_run_document(
+    *,
+    run_id: str,
+    authority: Mapping[str, Any],
+    started_at: datetime,
+    finished_at: datetime,
+    run_status: str,
+    checkpoint_before: date | None,
+    checkpoint_after: date | None,
+    session_outcomes: Sequence[Mapping[str, Any]],
+    failed_session: str | None,
+    failed_stage_index: int | None,
+    failed_stage_name: str | None,
+    failure_code: str | None,
+) -> dict[str, Any]:
+    statuses = [str(session["status"]) for session in session_outcomes]
+    return {
+        "run_id": run_id,
+        "model_version": "local-schedule-run-v1",
+        "request_id": str(authority["authority_id"]),
+        "plan_id": str(authority["plan_id"]),
+        "authority_id": str(authority["authority_id"]),
+        "authority_type": str(authority["authority_type"]),
+        "schedule_id": str(authority["schedule_id"]),
+        "schedule_fingerprint": str(authority["schedule_fingerprint"]),
+        "calendar_id": str(authority["calendar_id"]),
+        "calendar_fingerprint": str(authority["calendar_fingerprint"]),
+        "portfolio_id": str(authority["portfolio_id"]),
+        "risk_limit_policy_id": str(authority["risk_limit_policy_id"]),
+        "mandate_id": str(authority["mandate_id"]),
+        "mandate_fingerprint": str(authority["mandate_fingerprint"]),
+        "as_of_date": str(authority["as_of_date"]),
+        "latest_expected_session": str(authority["latest_expected_session"]),
+        "readiness_decision_id": str(authority["readiness_decision_id"]),
+        "readiness_document_sha256": str(authority["readiness_document_sha256"]),
+        "override_id": authority.get("override_id"),
+        "authorized_at": str(authority["authorized_at"]),
+        "started_at": started_at.isoformat(),
+        "finished_at": finished_at.isoformat(),
+        "run_status": run_status,
+        "checkpoint_before": checkpoint_before.isoformat() if checkpoint_before else None,
+        "checkpoint_after": checkpoint_after.isoformat() if checkpoint_after else None,
+        "selected_session_count": len(session_outcomes),
+        "started_session_count": sum(
+            status in {"completed", "failed"} for status in statuses
+        ),
+        "completed_session_count": statuses.count("completed"),
+        "failed_session": failed_session,
+        "failed_stage_index": failed_stage_index,
+        "failed_stage_name": failed_stage_name,
+        "failure_code": failure_code,
+        "sessions": [dict(session) for session in session_outcomes],
+        "provider_request_performed": False,
+        "notification_delivery_performed": False,
+        "cloud_schedule_activated": False,
+    }
+
+
 def run_local_portfolio_schedule(
     *,
     schedule_id: str,
@@ -535,16 +609,12 @@ def run_local_portfolio_schedule(
     command_runner: CommandRunner | None = None,
     mandate_loader: MandateLoader | None = None,
     calendar_loader: CalendarLoader | None = None,
+    run_history_recorder: RunHistoryRecorder | None = None,
+    clock: Clock | None = None,
 ) -> dict[str, Any]:
-    schedule = load_local_portfolio_schedule(
-        schedule_config_path,
-        schedule_id,
-    )
+    schedule = load_local_portfolio_schedule(schedule_config_path, schedule_id)
     selected_calendar_loader = calendar_loader or load_market_calendar
-    calendar = selected_calendar_loader(
-        calendar_config_path,
-        schedule.calendar_id,
-    )
+    calendar = selected_calendar_loader(calendar_config_path, schedule.calendar_id)
     state_path = _state_path(state_dir, schedule.schedule_id)
     state = _read_state(state_path)
     checkpoint_before = _checkpoint_date(state, schedule=schedule)
@@ -593,11 +663,7 @@ def run_local_portfolio_schedule(
         },
         "selection": {
             "as_of_date": as_of_date.isoformat(),
-            "checkpoint_before": (
-                checkpoint_before.isoformat()
-                if checkpoint_before is not None
-                else None
-            ),
+            "checkpoint_before": checkpoint_before.isoformat() if checkpoint_before else None,
             "sessions_selected": len(sessions),
             "session_dates": [value.isoformat() for value in sessions],
         },
@@ -608,6 +674,7 @@ def run_local_portfolio_schedule(
             "performed": False,
             "completed_sessions": [],
         },
+        "run_history": None,
         "provider_request_performed": False,
         "external_delivery_performed": False,
         "cloud_schedule_activated": False,
@@ -627,10 +694,7 @@ def run_local_portfolio_schedule(
         as_of_date=as_of_date,
         latest_expected_session=latest_expected_session,
         session_dates=sessions,
-        mandate_fingerprints=[
-            str(plan["mandate_fingerprint"])
-            for plan in plans
-        ],
+        mandate_fingerprints=[str(plan["mandate_fingerprint"]) for plan in plans],
     )
     summary["execution_authority"] = validated_authority
 
@@ -642,42 +706,199 @@ def run_local_portfolio_schedule(
     if not isinstance(dsn, str) or not dsn.strip():
         raise ValidationError("PostgreSQL DSN must be non-empty text")
 
+    run_id = build_local_schedule_run_id(
+        request_identifier=str(validated_authority["authority_id"]),
+        plan_id=str(validated_authority["plan_id"]),
+        authority_id=str(validated_authority["authority_id"]),
+    )
+    summary["run_id"] = run_id
     selected_runner = command_runner or _default_command_runner
+    selected_recorder = run_history_recorder or record_local_schedule_run
+    selected_clock = clock or (lambda: datetime.now(timezone.utc))
     environment = {
         "LOCAL_POSTGRES_DSN": dsn,
         "WAREHOUSE_POSTGRES_DSN": dsn,
     }
     lock_paths: list[Path] = []
     completed: list[str] = []
-    try:
-        lock_paths = acquire_partition_locks(
-            state_dir,
-            [f"local-schedule/{schedule.schedule_id}"],
-            summary["run_id"],
-            stale_after_seconds=21_600,
-        )
-        if len(lock_paths) != 1:
-            raise StorageError(
-                "local schedule did not acquire exactly one lock"
-            )
-        for session_date, plan in zip(sessions, plans, strict=True):
-            for raw_command in plan["commands"]:
-                selected_runner(tuple(raw_command), environment)
-            _write_state(
-                state_path,
-                schedule=schedule,
-                session_date=session_date,
-            )
-            completed.append(session_date.isoformat())
-    finally:
-        if lock_paths:
-            release_partition_locks(lock_paths)
+    session_outcomes = _selected_session_outcomes(plans)
+    run_started_at = _clock_value(selected_clock)
+    failure_code: str | None = None
+    failed_session: str | None = None
+    failed_stage_index: int | None = None
+    failed_stage_name: str | None = None
 
+    try:
+        try:
+            lock_paths = acquire_partition_locks(
+                state_dir,
+                [f"local-schedule/{schedule.schedule_id}"],
+                run_id,
+                stale_after_seconds=21_600,
+            )
+            if len(lock_paths) != 1:
+                raise StorageError("local schedule did not acquire exactly one lock")
+            for session_date, plan, outcome in zip(
+                sessions,
+                plans,
+                session_outcomes,
+                strict=True,
+            ):
+                session_started_at = _clock_value(selected_clock)
+                outcome["started_at"] = session_started_at.isoformat()
+                for stage_index, raw_command in enumerate(plan["commands"]):
+                    command = tuple(str(value) for value in raw_command)
+                    stage_name = _command_stage_name(command)
+                    stage_started_at = _clock_value(selected_clock)
+                    try:
+                        selected_runner(command, environment)
+                    except Exception:
+                        stage_finished_at = _clock_value(selected_clock)
+                        failure_code = "command_failed"
+                        failed_session = session_date.isoformat()
+                        failed_stage_index = stage_index
+                        failed_stage_name = stage_name
+                        outcome["status"] = "failed"
+                        outcome["finished_at"] = stage_finished_at.isoformat()
+                        outcome["failed_stage_index"] = stage_index
+                        outcome["failed_stage_name"] = stage_name
+                        outcome["failure_code"] = failure_code
+                        outcome["stages"].append(
+                            {
+                                "stage_index": stage_index,
+                                "stage_name": stage_name,
+                                "status": "failed",
+                                "started_at": stage_started_at.isoformat(),
+                                "finished_at": stage_finished_at.isoformat(),
+                                "failure_code": failure_code,
+                            }
+                        )
+                        raise
+                    stage_finished_at = _clock_value(selected_clock)
+                    outcome["stages"].append(
+                        {
+                            "stage_index": stage_index,
+                            "stage_name": stage_name,
+                            "status": "completed",
+                            "started_at": stage_started_at.isoformat(),
+                            "finished_at": stage_finished_at.isoformat(),
+                            "failure_code": None,
+                        }
+                    )
+
+                checkpoint_index = len(plan["commands"])
+                checkpoint_started_at = _clock_value(selected_clock)
+                try:
+                    _write_state(
+                        state_path,
+                        schedule=schedule,
+                        session_date=session_date,
+                    )
+                except Exception:
+                    checkpoint_finished_at = _clock_value(selected_clock)
+                    failure_code = "checkpoint_failed"
+                    failed_session = session_date.isoformat()
+                    failed_stage_index = checkpoint_index
+                    failed_stage_name = "checkpoint"
+                    outcome["status"] = "failed"
+                    outcome["finished_at"] = checkpoint_finished_at.isoformat()
+                    outcome["failed_stage_index"] = checkpoint_index
+                    outcome["failed_stage_name"] = "checkpoint"
+                    outcome["failure_code"] = failure_code
+                    outcome["stages"].append(
+                        {
+                            "stage_index": checkpoint_index,
+                            "stage_name": "checkpoint",
+                            "status": "failed",
+                            "started_at": checkpoint_started_at.isoformat(),
+                            "finished_at": checkpoint_finished_at.isoformat(),
+                            "failure_code": failure_code,
+                        }
+                    )
+                    raise
+                checkpoint_finished_at = _clock_value(selected_clock)
+                outcome["stages"].append(
+                    {
+                        "stage_index": checkpoint_index,
+                        "stage_name": "checkpoint",
+                        "status": "completed",
+                        "started_at": checkpoint_started_at.isoformat(),
+                        "finished_at": checkpoint_finished_at.isoformat(),
+                        "failure_code": None,
+                    }
+                )
+                outcome["status"] = "completed"
+                outcome["finished_at"] = checkpoint_finished_at.isoformat()
+                outcome["checkpoint_after"] = session_date.isoformat()
+                completed.append(session_date.isoformat())
+        finally:
+            if lock_paths:
+                release_partition_locks(lock_paths)
+    except Exception as exc:
+        if failure_code is None:
+            failure_code = (
+                "lock_overlap"
+                if isinstance(exc, OverlapError)
+                else "execution_stage_failed"
+            )
+        run_finished_at = _clock_value(selected_clock)
+        checkpoint_after = date.fromisoformat(completed[-1]) if completed else checkpoint_before
+        run_document = _terminal_run_document(
+            run_id=run_id,
+            authority=validated_authority,
+            started_at=run_started_at,
+            finished_at=run_finished_at,
+            run_status="failed",
+            checkpoint_before=checkpoint_before,
+            checkpoint_after=checkpoint_after,
+            session_outcomes=session_outcomes,
+            failed_session=failed_session,
+            failed_stage_index=failed_stage_index,
+            failed_stage_name=failed_stage_name,
+            failure_code=failure_code,
+        )
+        history = selected_recorder(dsn=dsn, run=run_document)
+        summary["run_history"] = dict(history)
+        summary["execution"] = {
+            "requested": True,
+            "performed": any(
+                outcome["status"] in {"completed", "failed"}
+                for outcome in session_outcomes
+            ),
+            "completed_sessions": completed,
+            "checkpoint_after": checkpoint_after.isoformat() if checkpoint_after else None,
+            "failure_code": failure_code,
+            "failed_session": failed_session,
+            "failed_stage_index": failed_stage_index,
+            "failed_stage_name": failed_stage_name,
+            "session_outcomes": session_outcomes,
+        }
+        raise
+
+    run_finished_at = _clock_value(selected_clock)
+    checkpoint_after = date.fromisoformat(completed[-1])
+    run_document = _terminal_run_document(
+        run_id=run_id,
+        authority=validated_authority,
+        started_at=run_started_at,
+        finished_at=run_finished_at,
+        run_status="completed",
+        checkpoint_before=checkpoint_before,
+        checkpoint_after=checkpoint_after,
+        session_outcomes=session_outcomes,
+        failed_session=None,
+        failed_stage_index=None,
+        failed_stage_name=None,
+        failure_code=None,
+    )
+    history = selected_recorder(dsn=dsn, run=run_document)
+    summary["run_history"] = dict(history)
     summary["execution"] = {
         "requested": True,
         "performed": True,
         "completed_sessions": completed,
         "checkpoint_after": completed[-1],
+        "session_outcomes": session_outcomes,
     }
     return summary
 
@@ -690,9 +911,7 @@ def _calendar_date(value: str) -> date:
             "must be a calendar date in YYYY-MM-DD format"
         ) from exc
     if value != parsed.isoformat():
-        raise argparse.ArgumentTypeError(
-            "must be a calendar date in YYYY-MM-DD format"
-        )
+        raise argparse.ArgumentTypeError("must be a calendar date in YYYY-MM-DD format")
     return parsed
 
 
@@ -733,10 +952,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--state-dir", type=Path, default=Path(".scheduler"))
     parser.add_argument(
         "--dsn",
-        default=os.environ.get(
-            "WAREHOUSE_POSTGRES_DSN",
-            DEFAULT_POSTGRES_DSN,
-        ),
+        default=os.environ.get("WAREHOUSE_POSTGRES_DSN", DEFAULT_POSTGRES_DSN),
     )
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--summary-json", type=Path)
@@ -795,10 +1011,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 1
     except Exception:
-        print(
-            "Local portfolio schedule failed: unexpected local failure",
-            file=sys.stderr,
-        )
+        print("Local portfolio schedule failed: unexpected local failure", file=sys.stderr)
         return 1
 
     print(json.dumps(summary, sort_keys=True))
