@@ -22,6 +22,9 @@ from ..common.config import load_yaml
 from ..common.exceptions import OverlapError, StorageError, ValidationError
 from ..warehouse.postgres_loader import DEFAULT_POSTGRES_DSN
 from .locks import acquire_partition_locks, release_partition_locks
+from .operational_readiness_execution_authority import (
+    validate_operational_readiness_execution_authority,
+)
 
 MODEL_VERSION = "local-portfolio-schedule-v1"
 MAX_CATCH_UP_SESSIONS = 31
@@ -527,6 +530,7 @@ def run_local_portfolio_schedule(
     state_dir: Path,
     dsn: str,
     execute: bool = False,
+    execution_authority: Mapping[str, Any] | None = None,
     python_executable: str = sys.executable,
     command_runner: CommandRunner | None = None,
     mandate_loader: MandateLoader | None = None,
@@ -598,6 +602,7 @@ def run_local_portfolio_schedule(
             "session_dates": [value.isoformat() for value in sessions],
         },
         "plans": plans,
+        "execution_authority": None,
         "execution": {
             "requested": execute,
             "performed": False,
@@ -609,6 +614,26 @@ def run_local_portfolio_schedule(
     }
     if not execute or not sessions:
         return summary
+
+    latest_expected_session = calendar.latest_expected_session(as_of_date)
+    validated_authority = validate_operational_readiness_execution_authority(
+        execution_authority,
+        schedule_id=schedule.schedule_id,
+        schedule_fingerprint=schedule.fingerprint,
+        calendar_id=calendar.calendar_id,
+        calendar_fingerprint=calendar.fingerprint,
+        portfolio_id=schedule.portfolio_id,
+        risk_limit_policy_id=schedule.policy_id,
+        as_of_date=as_of_date,
+        latest_expected_session=latest_expected_session,
+        session_dates=sessions,
+        mandate_fingerprints=[
+            str(plan["mandate_fingerprint"])
+            for plan in plans
+        ],
+    )
+    summary["execution_authority"] = validated_authority
+
     if not schedule.enabled:
         raise ValidationError(
             "local schedule is disabled; enable it in reviewed configuration "
@@ -674,7 +699,8 @@ def _calendar_date(value: str) -> date:
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Plan or explicitly execute a bounded local portfolio schedule."
+            "Plan a bounded local portfolio schedule. Direct execution requires "
+            "readiness-enforced authority from the dedicated wrapper."
         )
     )
     parser.add_argument("--schedule-id", required=True)
@@ -751,7 +777,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     except ValidationError:
         print(
             "Local portfolio schedule failed: configuration, checkpoint, "
-            "calendar, or options were invalid",
+            "calendar, options, or execution authority were invalid",
             file=sys.stderr,
         )
         return 1
