@@ -184,6 +184,7 @@ SELECT
     expected_session_rows::TEXT AS expected,
     session_rows::TEXT AS actual,
     CASE WHEN expected_session_rows = session_rows THEN 'pass' ELSE 'fail' END
+        AS status
 FROM counts
 
 UNION ALL
