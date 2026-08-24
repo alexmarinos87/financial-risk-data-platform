@@ -6,3 +6,18 @@ delivery:
     max_batch_events: 25
     max_attempts_per_event: 3
     initial_backoff_seconds: 1
+  retry_planning:
+    max_candidate_rows: 500
+    max_plan_events: 25
+    max_event_age_seconds: 604800
+    max_backoff_seconds: 3600
+    retryable_http_statuses:
+      - 408
+      - 425
+      - 429
+      - 500
+      - 502
+      - 503
+      - 504
+    retryable_error_codes:
+      - network_error
