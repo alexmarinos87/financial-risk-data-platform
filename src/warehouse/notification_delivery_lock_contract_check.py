@@ -18,6 +18,9 @@ from src.orchestration.portfolio_risk_notification_delivery_lock import (
 from src.warehouse.notification_retry_execution_contract import (
     build_retry_execution_record,
 )
+from src.warehouse.notification_retry_execution_reader import (
+    read_notification_retry_execution_request,
+)
 from src.warehouse.notification_retry_execution_recorder import (
     record_notification_retry_execution,
 )
@@ -47,6 +50,21 @@ def _history_contract(dsn: str) -> dict[str, Any]:
     second = record_notification_retry_execution(dsn=dsn, record=record)
     if first["created"] is not True or second["created"] is not False:
         raise AssertionError("notification retry history did not converge on retry")
+
+    retained = read_notification_retry_execution_request(
+        dsn=dsn,
+        request_id=record["request_id"],
+    )
+    if retained is None:
+        raise AssertionError("notification retry history preflight lookup returned no row")
+    if retained["record"] != record:
+        raise AssertionError("notification retry history preflight record changed")
+    retained_history = retained["history"]
+    if (
+        retained_history["record_id"] != record["record_id"]
+        or retained_history["created"] is not False
+    ):
+        raise AssertionError("notification retry history preflight summary is invalid")
 
     conflict = build_retry_execution_record(
         request_id="RETRY-CONTRACT-001",
@@ -124,6 +142,7 @@ def _history_contract(dsn: str) -> dict[str, Any]:
     return {
         "retry_history_created": True,
         "retry_history_exact_retry_converged": True,
+        "retry_history_preflight_read_validated": True,
         "retry_history_conflict_rejected": True,
         "retry_history_append_only": True,
         "retry_history_rows": row_count,
