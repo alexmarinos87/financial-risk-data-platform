@@ -59,9 +59,9 @@ def test_manual_retry_execution_is_exact_disabled_and_one_attempt_only() -> None
 
     for required in (
         "portfolio-risk-manual-retry-execution-v1",
-        "retry_execution max_events exceeds retry planning limit",
-        "retry execution max_events exceeds webhook batch limit",
-        "max_plan_age_seconds",
+        "policy.max_events > retry_policy.max_plan_events",
+        "policy.max_events > delivery_config.max_batch_events",
+        "policy.max_plan_age_seconds > retry_policy.max_event_age_seconds",
     ):
         assert required in policy_source
 
