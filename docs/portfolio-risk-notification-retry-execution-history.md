@@ -25,10 +25,11 @@ The recorded operator entry point is:
 src/orchestration/run_recorded_portfolio_risk_notification_retries.py
 ```
 
-The record contract and recorder are:
+The record contract, preflight reader and recorder are:
 
 ```text
 src/warehouse/notification_retry_execution_contract.py
+src/warehouse/notification_retry_execution_reader.py
 src/warehouse/notification_retry_execution_recorder.py
 ```
 
@@ -96,13 +97,25 @@ validation_error
 
 ## Recorded execution ordering
 
-The wrapper starts a local clock-bound execution record, invokes the existing exact
-P4c executor with tracking transport and attempt-writer interfaces, and records one
-terminal document after the executor returns or raises.
+The wrapper validates explicit execution and exact plan confirmation before reading
+terminal history. A previously retained request is resolved before any clock,
+configuration, delivery-lock, evidence-reader or transport work:
 
 ```text
-validate retained plan and request identity
-  -> invoke exact P4c executor
+validate retained plan, --execute and exact confirmation
+  -> read terminal history by request_id
+  -> completed same-plan record: return retained evidence
+  -> failed same-plan record: return the retained terminal failure
+  -> different-plan reuse: reject
+  -> no retained record: begin new clock-bound P4c execution
+```
+
+For a new request, the wrapper invokes the existing exact P4c executor with tracking
+transport and attempt-writer interfaces, then records one terminal document after
+the executor returns or raises.
+
+```text
+invoke exact P4c executor
   -> observe each external request identity
   -> observe each successful append-only attempt persistence
   -> classify terminal boundary
@@ -111,7 +124,9 @@ validate retained plan and request identity
 ```
 
 The wrapper does not replace P4c plan validation, current-evidence revalidation or
-delivery locking. It delegates all delivery authority to the existing executor.
+delivery locking. It delegates all new delivery authority to the existing executor.
+The history lookup only prevents a terminal operator request from being executed a
+second time.
 
 ## Append-only PostgreSQL history
 
@@ -121,12 +136,16 @@ The history table is:
 risk_platform.portfolio_risk_notification_retry_executions
 ```
 
-`request_id` is the idempotency identity for terminal recording:
+`request_id` is the idempotency identity for terminal recording and execution:
 
-- an exact retry converges on the retained row;
-- conflicting reuse of the request ID fails closed;
+- an exact completed retry returns the retained row before another external request;
+- an exact failed retry returns the same retained terminal failure;
+- conflicting reuse of the request ID for another plan fails closed;
 - a completed execution ID is unique; and
 - direct UPDATE and DELETE operations are rejected by a trigger.
+
+The preflight reader revalidates the canonical record and its stored SHA-256 before
+using it. Corrupt or mismatched retained evidence fails before side effects.
 
 The canonical JSON document and SHA-256 are stored alongside queryable scalar and
 array fields. PostgreSQL checks enforce status-specific request/persistence counts,
@@ -149,16 +168,17 @@ directly when durable terminal history is required:
 ```
 
 The wrapper retains terminal failure history before returning a non-zero exit code.
-If PostgreSQL itself is unavailable, durable history cannot be claimed and the
-command fails explicitly.
+If PostgreSQL itself is unavailable, durable history and safe request replay cannot
+be established, so the command fails before executing a new request.
 
 ## Validation boundary
 
-Unit tests use fake transports, attempt writers, clocks, executors and history
-recorders. The PostgreSQL 16 contract proves:
+Unit tests use fake transports, attempt writers, clocks, executors, history readers
+and recorders. The PostgreSQL 16 contract proves:
 
 - one terminal row is created;
 - an exact retry converges;
+- the pre-execution reader validates the retained record and digest;
 - conflicting request reuse fails;
 - direct mutation is rejected; and
 - retained evidence remains credential-free.
