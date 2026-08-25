@@ -34,6 +34,10 @@ from src.orchestration.portfolio_risk_notification_retry_plan_contract import (
 )
 from src.warehouse.notification_retry_execution_contract import (
     build_retry_execution_record,
+    validate_retry_execution_record,
+)
+from src.warehouse.notification_retry_execution_reader import (
+    read_notification_retry_execution_request,
 )
 from src.warehouse.notification_retry_execution_recorder import (
     record_notification_retry_execution,
@@ -43,6 +47,7 @@ from src.warehouse.postgres_loader import DEFAULT_POSTGRES_DSN
 Clock = Callable[[], datetime]
 Executor = Callable[..., dict[str, Any]]
 Recorder = Callable[..., dict[str, Any]]
+HistoryReader = Callable[..., dict[str, Any] | None]
 
 
 class RecordedRetryExecutionError(RuntimeError):
@@ -57,7 +62,7 @@ class RecordedRetryExecutionError(RuntimeError):
         self.history = dict(history)
 
 
-def _failure_code(exc: BaseException) -> str:
+def _failure_code(exc: Exception) -> str:
     if isinstance(exc, OverlapError):
         return "overlap_error"
     if isinstance(exc, ValidationError):
@@ -91,6 +96,40 @@ def _retained_fingerprint(
     return fingerprint if isinstance(fingerprint, str) else None
 
 
+def _existing_terminal_result(
+    *,
+    existing: Mapping[str, Any],
+    request_id: str,
+    plan_id: str,
+) -> dict[str, Any]:
+    record_value = existing.get("record")
+    history_value = existing.get("history")
+    if not isinstance(record_value, Mapping) or not isinstance(history_value, Mapping):
+        raise StorageError("retained retry execution history is invalid")
+    record = validate_retry_execution_record(record_value)
+    if record["request_id"] != request_id:
+        raise StorageError("retained retry execution request identity changed")
+    if record["plan_id"] != plan_id:
+        raise ValidationError(
+            "request_id already exists for a different notification retry plan"
+        )
+    if record["terminal_status"] == "completed":
+        execution_summary = record["execution_summary"]
+        if not isinstance(execution_summary, Mapping):
+            raise StorageError("completed retry execution summary is unavailable")
+        return {
+            "execution_summary": dict(execution_summary),
+            "history": dict(history_value),
+        }
+    failure_code = record["failure_code"]
+    if not isinstance(failure_code, str):
+        raise StorageError("failed retry execution history lacks a failure code")
+    raise RecordedRetryExecutionError(
+        failure_code=failure_code,
+        history=history_value,
+    )
+
+
 def execute_and_record_portfolio_risk_notification_retries(
     *,
     plan_path: Path,
@@ -102,6 +141,7 @@ def execute_and_record_portfolio_risk_notification_retries(
     environment: Mapping[str, str] | None = None,
     executor: Executor | None = None,
     recorder: Recorder | None = None,
+    history_reader: HistoryReader | None = None,
     transport: Transport | None = None,
     attempt_writer: AttemptWriter | None = None,
     clock: Clock | None = None,
@@ -113,6 +153,26 @@ def execute_and_record_portfolio_risk_notification_retries(
     assert selected_request_id is not None
     plan_id = retained_plan["plan_id"]
     assert isinstance(plan_id, str)
+    if execute is not True:
+        raise ValidationError("explicit --execute is required for recorded retries")
+    selected_confirmation = safe_segment(confirm_plan_id, "confirm_plan_id")
+    if selected_confirmation != plan_id:
+        raise ValidationError("confirm_plan_id does not match the retained retry plan")
+
+    selected_history_reader = history_reader
+    if selected_history_reader is None and recorder is None:
+        selected_history_reader = read_notification_retry_execution_request
+    if selected_history_reader is not None:
+        existing = selected_history_reader(
+            dsn=dsn,
+            request_id=selected_request_id,
+        )
+        if existing is not None:
+            return _existing_terminal_result(
+                existing=existing,
+                request_id=selected_request_id,
+                plan_id=plan_id,
+            )
 
     selected_clock = clock or (lambda: datetime.now(timezone.utc))
     started_at = aware_utc(selected_clock(), "recorded execution started_at")
