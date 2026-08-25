@@ -331,8 +331,7 @@ def write_delivery_attempt(
     placeholders = ", ".join(["%s"] * len(columns))
     statement = (
         f"INSERT INTO {schema}.portfolio_risk_notification_delivery_attempts "
-        f"({quoted}) VALUES ({placeholders}) "
-        "ON CONFLICT (attempt_id) DO NOTHING"
+        f"({quoted}) VALUES ({placeholders})"
     )
     values = tuple(attempt[column] for column in columns)
     try:
@@ -355,7 +354,7 @@ def deliver_portfolio_risk_notifications(
     transport: Transport | None = None,
 ) -> dict[str, Any]:
     config = load_webhook_delivery_config(config_path)
-    selected_environment = environment or os.environ
+    selected_environment = environment if environment is not None else os.environ
     raw_endpoint = selected_environment.get(config.endpoint_env)
     endpoint_host: str | None = None
     endpoint_value: str | None = None
