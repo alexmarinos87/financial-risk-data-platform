@@ -143,6 +143,11 @@ Unit tests use fake PostgreSQL sessions and prove:
 - initial delivery acquires before candidate selection; and
 - governed retry acquires before current-evidence revalidation.
 
+The PostgreSQL 16 contention contract opens independent sessions and proves that a
+second session is rejected while the first owns the key, then acquires successfully
+after explicit release. This contract runs inside `make postgres-contract-check`
+before the existing warehouse consistency suite.
+
 Ordinary CI uses fake transports and performs no webhook request. The committed
 webhook and retry-execution settings remain disabled. This increment does not
 activate a destination, schedule delivery, deploy infrastructure or run
