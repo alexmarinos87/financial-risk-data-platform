@@ -10,7 +10,7 @@ retained portfolio-risk-dead-letter-retry-plan-v1
   + exact plan confirmation
   + current reviewed delivery and retry policy
   + current event, attempt and acknowledgement evidence
-  -> fail-closed revalidation before the first request
+  -> fail-closed revalidation before the first network request
   -> one bounded HTTPS attempt per planned event
   -> stable notification Idempotency-Key
   -> append-only delivery-attempt evidence
@@ -43,15 +43,19 @@ retry_execution:
   enabled: false
 ```
 
-External retry delivery requires all of the following:
+The reviewed activation sequence is deliberately split:
 
-1. A reviewed configuration change enabling `delivery.webhook.enabled`.
-2. A reviewed configuration change enabling `delivery.retry_execution.enabled`.
-3. A fresh retry plan generated after those settings were enabled.
-4. A locally supplied HTTPS endpoint through `RISK_NOTIFICATION_WEBHOOK_URL`.
-5. An explicit `--execute` flag.
-6. The exact retained `plan_id` repeated through `--confirm-plan-id`.
-7. A bounded operator request ID and explicit execution timestamp.
+1. Enable `delivery.webhook.enabled` through a reviewed local configuration.
+2. Generate a fresh retry plan that binds that enabled delivery fingerprint.
+3. Inspect the complete plan and retain its exact `plan_id`.
+4. Enable `delivery.retry_execution.enabled` through a second reviewed change.
+5. Supply the HTTPS endpoint locally through `RISK_NOTIFICATION_WEBHOOK_URL`.
+6. Invoke the executor with `--execute`, the exact `--confirm-plan-id`, and a
+   bounded operator request ID.
+
+The retry-execution flag is not part of the P4b plan identity, so it may remain
+disabled while the plan is prepared and reviewed. The delivery fingerprint and
+retry-planning fingerprint are part of the identity and must remain exact.
 
 A plan generated while webhook delivery was disabled cannot later be executed merely
 by changing the configuration. A new plan must bind the enabled delivery
@@ -78,12 +82,16 @@ The validator independently checks:
 The retained plan is evidence, not a general instruction file. The executor does not
 accept an arbitrary list of event IDs.
 
-## Revalidation immediately before delivery
+## Clock-bound revalidation immediately before delivery
+
+The executor derives its execution-start timestamp from the local UTC clock. The
+operator cannot supply or backdate that timestamp. Tests inject a deterministic
+clock, but the CLI always uses the actual current clock.
 
 After validating the file and current configuration, the executor performs one
-bounded PostgreSQL read at the declared `executed_at` timestamp. It rebuilds the
-retry plan using the current evidence and compares it with the retained plan before
-the first network request.
+bounded PostgreSQL read as of that execution-start timestamp. It rebuilds the retry
+plan using current evidence and compares it with the retained plan before the first
+network request.
 
 Execution is rejected when any of the following changes:
 
@@ -121,8 +129,10 @@ The execution event limit may not exceed either:
 - the retry plan's `max_plan_events`; or
 - the webhook delivery `max_batch_events`.
 
-The maximum plan age may not exceed the retry policy's event-age limit. Bounds are
-validated before PostgreSQL access and before any external request.
+The maximum plan age may not exceed the retry policy's event-age limit. The age is
+measured from the retained plan timestamp to the actual clock-derived execution
+start. Bounds are validated before PostgreSQL access and before any external
+request.
 
 ## One attempt per event
 
@@ -132,6 +142,10 @@ This command performs exactly one new attempt for each event listed in the retai
 It deliberately has no internal retry loop and performs no retry sleep. A failed
 manual attempt produces new append-only evidence. A later operator action must
 create a new current plan after the configured backoff has elapsed.
+
+The older `deliver_portfolio_risk_notifications` adapter is now restricted to first
+attempts only. It rejects any event with prior delivery evidence before transport,
+so subsequent attempts cannot bypass the exact P4b/P4c path.
 
 Attempt identity continues to bind:
 
@@ -176,8 +190,9 @@ The attempt retains:
 - canonical payload SHA-256.
 
 No response body, endpoint path, credential, DSN or arbitrary exception text is
-retained. An invalid transport response is rejected before an attempt row is
-written.
+retained. Unknown transport exception text is mapped to the bounded
+`network_error` code. An invalid transport response is rejected before an attempt
+row is written.
 
 ## Deterministic execution summary
 
@@ -186,7 +201,7 @@ The execution ID binds:
 ```text
 retained plan ID
 operator request ID
-executed-at timestamp
+clock-derived execution-start timestamp
 endpoint host
 current delivery fingerprint
 current retry-policy fingerprint
@@ -218,8 +233,8 @@ dead_letter_mutated = false
 
 ## Operator workflow
 
-First apply a reviewed local configuration that enables both webhook delivery and
-manual retry execution, then create a fresh plan:
+First apply a reviewed local configuration that enables webhook delivery, then
+create a fresh plan:
 
 ```bash
 export RISK_NOTIFICATION_WEBHOOK_URL='https://alerts.example.com/risk'
@@ -232,7 +247,8 @@ export RISK_NOTIFICATION_WEBHOOK_URL='https://alerts.example.com/risk'
   --summary-json .demo/notification-retry-plan.json
 ```
 
-Inspect the complete plan, record its exact `plan_id`, and execute it explicitly:
+Inspect the complete plan, record its exact `plan_id`, enable the separate
+`retry_execution` gate through review, and execute it explicitly:
 
 ```bash
 .venv/bin/python \
@@ -240,13 +256,13 @@ Inspect the complete plan, record its exact `plan_id`, and execute it explicitly
   --plan .demo/notification-retry-plan.json \
   --confirm-plan-id '<exact-plan-id>' \
   --request-id 'RETRY-2026-001' \
-  --executed-at 2026-04-01T12:05:00Z \
   --execute \
   --summary-json .demo/notification-retry-execution.json
 ```
 
-The PostgreSQL DSN comes from `WAREHOUSE_POSTGRES_DSN` or `--dsn` and is not
-included in the result.
+The execution-start timestamp is derived internally from the local UTC clock. The
+PostgreSQL DSN comes from `WAREHOUSE_POSTGRES_DSN` or `--dsn`; neither is included
+in the result.
 
 ## Validation boundary
 
