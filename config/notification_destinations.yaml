@@ -1,0 +1,21 @@
+model_version: portfolio-risk-notification-destination-v1
+destinations:
+  risk-operations-webhook:
+    channel: webhook
+    endpoint_env: RISK_NOTIFICATION_WEBHOOK_URL
+    owner:
+      team: risk-operations
+      contact: risk-operations-oncall
+    purpose: portfolio-risk-breach-lifecycle
+    recipient_scope: risk-operations
+    data_classification: internal
+    allowed_event_types:
+      - breach_escalated
+      - breach_opened
+      - breach_resolved
+    activation:
+      enabled: false
+      change_request_id: null
+      reviewed_by: []
+      reviewed_at: null
+      review_expires_at: null
