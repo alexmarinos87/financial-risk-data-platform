@@ -29,7 +29,6 @@ from src.orchestration.plan_portfolio_risk_notification_retries import (
     read_notification_retry_candidates,
 )
 from src.orchestration.portfolio_risk_notification_retry_execution_policy import (
-    ERROR_CODE_PATTERN,
     EXECUTION_MODEL_VERSION,
     aware_utc,
     load_retry_execution_contract,
@@ -66,7 +65,6 @@ def execute_portfolio_risk_notification_retries(
     plan_path: Path,
     confirm_plan_id: str,
     request_id: str,
-    executed_at: datetime | str,
     config_path: Path,
     dsn: str,
     execute: bool = False,
@@ -78,7 +76,8 @@ def execute_portfolio_risk_notification_retries(
 ) -> dict[str, Any]:
     if execute is not True:
         raise ValidationError("explicit --execute is required for manual retry delivery")
-    execution_time = aware_utc(executed_at, "executed_at")
+    selected_clock = clock or (lambda: datetime.now(timezone.utc))
+    execution_time = _clock_utc(selected_clock, "execution_started_at")
     selected_request_id = safe_segment(request_id, "request_id")
     assert selected_request_id is not None
     retained_plan = load_retry_plan(plan_path)
@@ -110,7 +109,7 @@ def execute_portfolio_risk_notification_retries(
     planned_at = aware_utc(retained_plan["planned_at"], "retry plan planned_at")
     plan_age_seconds = (execution_time - planned_at).total_seconds()
     if plan_age_seconds < 0:
-        raise ValidationError("executed_at must not precede retry plan creation")
+        raise ValidationError("execution start must not precede retry plan creation")
     if plan_age_seconds > execution_policy.max_plan_age_seconds:
         raise ValidationError("retry plan exceeds the manual execution age limit")
     retryable_event_ids = cast(list[str], retained_plan["retryable_event_ids"])
@@ -191,7 +190,6 @@ def execute_portfolio_risk_notification_retries(
         lambda attempt: write_delivery_attempt(attempt, dsn=dsn)
     )
     selected_transport = transport or _default_transport
-    selected_clock = clock or (lambda: datetime.now(timezone.utc))
     outcomes: list[dict[str, Any]] = []
     for expected in expected_attempts:
         event_id = cast(str, expected["event_id"])
@@ -202,7 +200,7 @@ def execute_portfolio_risk_notification_retries(
         payload_sha256 = hashlib.sha256(payload).hexdigest()
         attempted_at = _clock_utc(selected_clock, "attempted_at")
         if attempted_at < execution_time:
-            raise ValidationError("attempted_at must not precede executed_at")
+            raise ValidationError("attempted_at must not precede execution start")
         outcome = "failed"
         http_status: int | None = None
         error_code: str | None = None
@@ -228,7 +226,7 @@ def execute_portfolio_risk_notification_retries(
             bounded_code = str(exc)
             error_code = (
                 bounded_code
-                if ERROR_CODE_PATTERN.fullmatch(bounded_code)
+                if bounded_code in retry_policy.retryable_error_codes
                 else "network_error"
             )
         attempt = {
@@ -332,7 +330,6 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--plan", required=True, type=Path)
     parser.add_argument("--confirm-plan-id", required=True)
     parser.add_argument("--request-id", required=True)
-    parser.add_argument("--executed-at", required=True)
     parser.add_argument(
         "--config",
         type=Path,
@@ -354,7 +351,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             plan_path=args.plan,
             confirm_plan_id=args.confirm_plan_id,
             request_id=args.request_id,
-            executed_at=args.executed_at,
             config_path=args.config,
             dsn=args.dsn,
             execute=args.execute,
