@@ -73,8 +73,8 @@ def test_retry_follow_up_is_current_read_only_and_postgres_validated() -> None:
     ):
         assert required in fixture or required in postgres_check
 
-    assert "follow-up-event-uncertain" in postgres_check
-    assert "follow-up-event-superseded" in postgres_check
+    assert "follow-up-event-uncertain" in fixture
+    assert "follow-up-event-superseded" in fixture
     assert "superseded_uncertainty_excluded" in postgres_check
     assert "external_request_performed" in postgres_check
     assert "20_portfolio_risk_notification_retry_follow_up_schema.sql:ro" in compose
