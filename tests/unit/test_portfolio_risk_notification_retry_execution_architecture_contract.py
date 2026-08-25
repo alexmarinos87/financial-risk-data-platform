@@ -5,6 +5,9 @@ def test_manual_retry_execution_is_exact_disabled_and_one_attempt_only() -> None
     source = Path(
         "src/orchestration/execute_portfolio_risk_notification_retries.py"
     ).read_text(encoding="utf-8")
+    delivery_source = Path(
+        "src/orchestration/deliver_portfolio_risk_notifications.py"
+    ).read_text(encoding="utf-8")
     plan_contract = Path(
         "src/orchestration/portfolio_risk_notification_retry_plan_contract.py"
     ).read_text(encoding="utf-8")
@@ -23,7 +26,6 @@ def test_manual_retry_execution_is_exact_disabled_and_one_attempt_only() -> None
     assert "enabled: false" in retry_execution
 
     for required in (
-        "portfolio-risk-manual-retry-execution-v1",
         "--plan",
         "--confirm-plan-id",
         "--request-id",
@@ -31,7 +33,6 @@ def test_manual_retry_execution_is_exact_disabled_and_one_attempt_only() -> None
         "--execute",
         "assert_retry_plan_is_current",
         "Idempotency-Key",
-        "portfolio_risk_notification_delivery_attempts",
         "response_bodies_recorded",
         "plan_mutated",
         "acknowledgement_mutated",
@@ -44,6 +45,8 @@ def test_manual_retry_execution_is_exact_disabled_and_one_attempt_only() -> None
     assert "UPDATE risk_platform" not in source
     assert "DELETE FROM risk_platform" not in source
 
+    assert "portfolio_risk_notification_delivery_attempts" in delivery_source
+
     for required in (
         "MAX_PLAN_FILE_BYTES",
         "exact_mapping",
@@ -55,6 +58,7 @@ def test_manual_retry_execution_is_exact_disabled_and_one_attempt_only() -> None
         assert required in plan_contract
 
     for required in (
+        "portfolio-risk-manual-retry-execution-v1",
         "retry_execution max_events exceeds retry planning limit",
         "retry execution max_events exceeds webhook batch limit",
         "max_plan_age_seconds",
