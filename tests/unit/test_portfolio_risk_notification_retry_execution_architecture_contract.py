@@ -30,8 +30,8 @@ def test_manual_retry_execution_is_exact_disabled_and_one_attempt_only() -> None
         "--plan",
         "--confirm-plan-id",
         "--request-id",
-        "--executed-at",
         "--execute",
+        "execution_started_at",
         "assert_retry_plan_is_current",
         "Idempotency-Key",
         "response_bodies_recorded",
@@ -41,12 +41,21 @@ def test_manual_retry_execution_is_exact_disabled_and_one_attempt_only() -> None
     ):
         assert required in source
 
+    assert "--executed-at" not in source
     assert "time_module.sleep" not in source
     assert "Sleeper" not in source
     assert "UPDATE risk_platform" not in source
     assert "DELETE FROM risk_platform" not in source
 
-    assert "portfolio_risk_notification_delivery_attempts" in delivery_source
+    for required in (
+        "portfolio_risk_notification_delivery_attempts",
+        "HAVING COALESCE(MAX(attempt.attempt_number), 0) = 0",
+        "events with existing delivery attempts require an exact retry plan",
+        "initial_attempts_only",
+    ):
+        assert required in delivery_source
+    assert "time_module.sleep" not in delivery_source
+    assert "for attempt_number in range" not in delivery_source
 
     for required in (
         "MAX_PLAN_FILE_BYTES",
@@ -71,6 +80,7 @@ def test_manual_retry_execution_is_exact_disabled_and_one_attempt_only() -> None
         "Primary arc42 block: `orchestration`",
         "disabled-by-default",
         "before the first network request",
+        "operator cannot supply or backdate",
         "one new attempt",
         "no internal retry loop",
         "stable `Idempotency-Key`",
