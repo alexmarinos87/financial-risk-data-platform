@@ -20,6 +20,7 @@ def test_manual_retry_execution_is_exact_disabled_and_one_attempt_only() -> None
     docs = Path(
         "docs/portfolio-risk-notification-retry-execution.md"
     ).read_text(encoding="utf-8")
+    normalized_docs = " ".join(docs.split()).casefold()
 
     assert "retry_execution:" in config
     retry_execution = config.split("retry_execution:", maxsplit=1)[1]
@@ -79,4 +80,4 @@ def test_manual_retry_execution_is_exact_disabled_and_one_attempt_only() -> None
         "terraform apply",
         "P4d",
     ):
-        assert required.casefold() in docs.casefold()
+        assert required.casefold() in normalized_docs
