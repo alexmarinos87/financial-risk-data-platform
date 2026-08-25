@@ -21,3 +21,7 @@ delivery:
       - 504
     retryable_error_codes:
       - network_error
+  retry_execution:
+    enabled: false
+    max_plan_age_seconds: 3600
+    max_events: 25
