@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, cast
 
-from src.common.exceptions import StorageError, ValidationError
+from src.common.exceptions import OverlapError, StorageError, ValidationError
 from src.orchestration.deliver_portfolio_risk_notifications import (
     CHANNEL,
     MODEL_VERSION as DELIVERY_MODEL_VERSION,
@@ -27,6 +27,10 @@ from src.orchestration.plan_portfolio_risk_notification_retries import (
     CandidateReader,
     plan_portfolio_risk_notification_retries,
     read_notification_retry_candidates,
+)
+from src.orchestration.portfolio_risk_notification_delivery_lock import (
+    DeliveryLockFactory,
+    acquire_notification_delivery_lock,
 )
 from src.orchestration.portfolio_risk_notification_retry_execution_policy import (
     EXECUTION_MODEL_VERSION,
@@ -73,6 +77,7 @@ def execute_portfolio_risk_notification_retries(
     attempt_writer: AttemptWriter | None = None,
     transport: Transport | None = None,
     clock: Clock | None = None,
+    lock_factory: DeliveryLockFactory | None = None,
 ) -> dict[str, Any]:
     if execute is not True:
         raise ValidationError("explicit --execute is required for manual retry delivery")
@@ -127,181 +132,203 @@ def execute_portfolio_risk_notification_retries(
     endpoint, endpoint_host = _endpoint(raw_endpoint)
 
     selected_reader = reader or read_notification_retry_candidates
-    filters = cast(Mapping[str, Any], retained_plan["filters"])
-    candidates = selected_reader(
-        dsn=dsn,
-        planned_at=execution_time,
-        max_candidate_rows=retry_policy.max_candidate_rows,
-        policy_id=filters["policy_id"],
-        portfolio_id=filters["portfolio_id"],
-    )
-    if not isinstance(candidates, list):
-        raise StorageError("notification retry reader returned invalid evidence")
-    if len(candidates) > retry_policy.max_candidate_rows:
-        raise ValidationError("notification retry evidence exceeds max_candidate_rows")
-    current_plan = plan_portfolio_risk_notification_retries(
-        config_path=config_path,
-        dsn=dsn,
-        planned_at=execution_time,
-        policy_id=cast(str | None, filters["policy_id"]),
-        portfolio_id=cast(str | None, filters["portfolio_id"]),
-        reader=lambda **_: candidates,
-    )
-    assert_retry_plan_is_current(retained_plan, current_plan)
-
-    candidate_by_id = {
-        cast(str, candidate.get("event_id")): candidate for candidate in candidates
-    }
-    retained_events = cast(list[Mapping[str, Any]], retained_plan["events"])
-    event_by_id = {
-        cast(str, event["event_id"]): event for event in retained_events
-    }
-    expected_attempts: list[dict[str, Any]] = []
-    for event_id in retryable_event_ids:
-        event = event_by_id[event_id]
-        attempt_number = cast(int, event["attempt_count"]) + 1
-        if attempt_number > delivery_config.max_attempts_per_event:
-            raise ValidationError(
-                f"event {event_id} has no remaining delivery attempt capacity"
-            )
-        expected_attempts.append(
-            {
-                "attempt_id": _attempt_id(event_id, attempt_number),
-                "attempt_number": attempt_number,
-                "event_document_sha256": event["event_document_sha256"],
-                "event_id": event_id,
-            }
-        )
-    identity = {
-        "channel": CHANNEL,
-        "delivery_config_fingerprint": delivery_config.fingerprint,
-        "endpoint_host": endpoint_host,
-        "executed_at": execution_time.isoformat(),
-        "expected_attempts": expected_attempts,
-        "model_version": EXECUTION_MODEL_VERSION,
-        "plan_id": retained_plan["plan_id"],
-        "request_id": selected_request_id,
-        "retry_execution_policy_fingerprint": execution_policy.fingerprint,
-        "retry_policy_fingerprint": retry_policy.fingerprint,
-    }
-    execution_id = _execution_id(identity)
-
     selected_writer = attempt_writer or (
         lambda attempt: write_delivery_attempt(attempt, dsn=dsn)
     )
     selected_transport = transport or _default_transport
-    outcomes: list[dict[str, Any]] = []
-    for expected in expected_attempts:
-        event_id = cast(str, expected["event_id"])
-        candidate = candidate_by_id.get(event_id)
-        if candidate is None:
-            raise ValidationError(f"current candidate evidence is missing {event_id}")
-        payload = _canonical_payload(candidate)
-        payload_sha256 = hashlib.sha256(payload).hexdigest()
-        attempted_at = _clock_utc(selected_clock, "attempted_at")
-        if attempted_at < execution_time:
-            raise ValidationError("attempted_at must not precede execution start")
-        outcome = "failed"
-        http_status: int | None = None
-        error_code: str | None = None
-        try:
-            response_status = selected_transport(
-                endpoint,
-                payload,
-                {
-                    "Content-Type": "application/json",
-                    "Idempotency-Key": event_id,
-                    "User-Agent": "financial-risk-data-platform/1",
-                },
-                float(delivery_config.timeout_seconds),
-            )
-            if type(response_status) is not int or not 100 <= response_status <= 599:
-                raise ValidationError("webhook transport returned an invalid HTTP status")
-            http_status = response_status
-            if 200 <= response_status <= 299:
-                outcome = "succeeded"
-            else:
-                error_code = f"http_{response_status}"
-        except DeliveryTransportError as exc:
-            bounded_code = str(exc)
-            error_code = (
-                bounded_code
-                if bounded_code in retry_policy.retryable_error_codes
-                else "network_error"
-            )
-        attempt = {
-            "attempt_id": expected["attempt_id"],
-            "model_version": DELIVERY_MODEL_VERSION,
-            "event_id": event_id,
-            "channel": CHANNEL,
-            "attempt_number": expected["attempt_number"],
-            "idempotency_key": event_id,
-            "attempted_at": attempted_at,
-            "outcome": outcome,
-            "http_status": http_status,
-            "error_code": error_code,
-            "endpoint_host": endpoint_host,
-            "payload_sha256": payload_sha256,
-        }
-        selected_writer(attempt)
-        outcomes.append(
-            {
-                "attempt_id": attempt["attempt_id"],
-                "attempt_number": attempt["attempt_number"],
-                "attempted_at": attempted_at.isoformat(),
-                "error_code": error_code,
-                "event_id": event_id,
-                "http_status": http_status,
-                "outcome": outcome,
-                "payload_sha256": payload_sha256,
-            }
-        )
+    selected_lock_factory = lock_factory or acquire_notification_delivery_lock
+    filters = cast(Mapping[str, Any], retained_plan["filters"])
 
-    succeeded = sum(outcome["outcome"] == "succeeded" for outcome in outcomes)
-    failed = len(outcomes) - succeeded
-    return {
-        "execution_id": execution_id,
-        "model_version": EXECUTION_MODEL_VERSION,
-        "request_id": selected_request_id,
-        "plan_id": retained_plan["plan_id"],
-        "executed_at": execution_time.isoformat(),
-        "channel": CHANNEL,
-        "endpoint": {
-            "host": endpoint_host,
-            "full_url_recorded": False,
-        },
-        "configuration": {
-            "delivery_fingerprint": delivery_config.fingerprint,
+    with selected_lock_factory(dsn=dsn) as lock_evidence:
+        candidates = selected_reader(
+            dsn=dsn,
+            planned_at=execution_time,
+            max_candidate_rows=retry_policy.max_candidate_rows,
+            policy_id=filters["policy_id"],
+            portfolio_id=filters["portfolio_id"],
+        )
+        if not isinstance(candidates, list):
+            raise StorageError("notification retry reader returned invalid evidence")
+        if len(candidates) > retry_policy.max_candidate_rows:
+            raise ValidationError("notification retry evidence exceeds max_candidate_rows")
+        current_plan = plan_portfolio_risk_notification_retries(
+            config_path=config_path,
+            dsn=dsn,
+            planned_at=execution_time,
+            policy_id=cast(str | None, filters["policy_id"]),
+            portfolio_id=cast(str | None, filters["portfolio_id"]),
+            reader=lambda **_: candidates,
+        )
+        assert_retry_plan_is_current(retained_plan, current_plan)
+
+        candidate_by_id = {
+            cast(str, candidate.get("event_id")): candidate for candidate in candidates
+        }
+        retained_events = cast(list[Mapping[str, Any]], retained_plan["events"])
+        event_by_id = {
+            cast(str, event["event_id"]): event for event in retained_events
+        }
+        expected_attempts: list[dict[str, Any]] = []
+        for event_id in retryable_event_ids:
+            event = event_by_id[event_id]
+            attempt_number = cast(int, event["attempt_count"]) + 1
+            if attempt_number > delivery_config.max_attempts_per_event:
+                raise ValidationError(
+                    f"event {event_id} has no remaining delivery attempt capacity"
+                )
+            expected_attempts.append(
+                {
+                    "attempt_id": _attempt_id(event_id, attempt_number),
+                    "attempt_number": attempt_number,
+                    "event_document_sha256": event["event_document_sha256"],
+                    "event_id": event_id,
+                }
+            )
+        identity = {
+            "channel": CHANNEL,
+            "delivery_config_fingerprint": delivery_config.fingerprint,
+            "delivery_lock_key_fingerprint": lock_evidence["key_fingerprint"],
+            "delivery_lock_model_version": lock_evidence["model_version"],
+            "endpoint_host": endpoint_host,
+            "executed_at": execution_time.isoformat(),
+            "expected_attempts": expected_attempts,
+            "model_version": EXECUTION_MODEL_VERSION,
+            "plan_id": retained_plan["plan_id"],
+            "request_id": selected_request_id,
             "retry_execution_policy_fingerprint": execution_policy.fingerprint,
             "retry_policy_fingerprint": retry_policy.fingerprint,
-        },
-        "revalidation": {
-            "performed": True,
-            "current_plan_id": current_plan["plan_id"],
-            "events_checked": len(cast(list[Any], retained_plan["events"])),
-            "exact_event_evidence_unchanged": True,
-        },
-        "selection": {
-            "planned_retryable_events": len(retryable_event_ids),
-            "executed_events": len(outcomes),
-            "max_events": execution_policy.max_events,
-        },
-        "outcomes": outcomes,
-        "outcome_counts": {
-            "succeeded": succeeded,
-            "failed": failed,
-        },
-        "execution": {
-            "requested": True,
-            "performed": True,
-            "external_requests_performed": len(outcomes),
-            "delivery_attempts_written": len(outcomes),
-        },
-        "response_bodies_recorded": False,
-        "plan_mutated": False,
-        "acknowledgement_mutated": False,
-        "dead_letter_mutated": False,
-    }
+        }
+        execution_id = _execution_id(identity)
+
+        outcomes: list[dict[str, Any]] = []
+        for expected in expected_attempts:
+            event_id = cast(str, expected["event_id"])
+            candidate = candidate_by_id.get(event_id)
+            if candidate is None:
+                raise ValidationError(
+                    f"current candidate evidence is missing {event_id}"
+                )
+            payload = _canonical_payload(candidate)
+            payload_sha256 = hashlib.sha256(payload).hexdigest()
+            attempted_at = _clock_utc(selected_clock, "attempted_at")
+            if attempted_at < execution_time:
+                raise ValidationError("attempted_at must not precede execution start")
+            outcome = "failed"
+            http_status: int | None = None
+            error_code: str | None = None
+            try:
+                response_status = selected_transport(
+                    endpoint,
+                    payload,
+                    {
+                        "Content-Type": "application/json",
+                        "Idempotency-Key": event_id,
+                        "User-Agent": "financial-risk-data-platform/1",
+                    },
+                    float(delivery_config.timeout_seconds),
+                )
+                if type(response_status) is not int or not 100 <= response_status <= 599:
+                    raise ValidationError(
+                        "webhook transport returned an invalid HTTP status"
+                    )
+                http_status = response_status
+                if 200 <= response_status <= 299:
+                    outcome = "succeeded"
+                else:
+                    error_code = f"http_{response_status}"
+            except DeliveryTransportError as exc:
+                bounded_code = str(exc)
+                error_code = (
+                    bounded_code
+                    if bounded_code in retry_policy.retryable_error_codes
+                    else "network_error"
+                )
+            attempt = {
+                "attempt_id": expected["attempt_id"],
+                "model_version": DELIVERY_MODEL_VERSION,
+                "event_id": event_id,
+                "channel": CHANNEL,
+                "attempt_number": expected["attempt_number"],
+                "idempotency_key": event_id,
+                "attempted_at": attempted_at,
+                "outcome": outcome,
+                "http_status": http_status,
+                "error_code": error_code,
+                "endpoint_host": endpoint_host,
+                "payload_sha256": payload_sha256,
+            }
+            selected_writer(attempt)
+            outcomes.append(
+                {
+                    "attempt_id": attempt["attempt_id"],
+                    "attempt_number": attempt["attempt_number"],
+                    "attempted_at": attempted_at.isoformat(),
+                    "error_code": error_code,
+                    "event_id": event_id,
+                    "http_status": http_status,
+                    "outcome": outcome,
+                    "payload_sha256": payload_sha256,
+                }
+            )
+
+        succeeded = sum(outcome["outcome"] == "succeeded" for outcome in outcomes)
+        failed = len(outcomes) - succeeded
+        summary = {
+            "execution_id": execution_id,
+            "model_version": EXECUTION_MODEL_VERSION,
+            "request_id": selected_request_id,
+            "plan_id": retained_plan["plan_id"],
+            "executed_at": execution_time.isoformat(),
+            "channel": CHANNEL,
+            "endpoint": {
+                "host": endpoint_host,
+                "full_url_recorded": False,
+            },
+            "configuration": {
+                "delivery_fingerprint": delivery_config.fingerprint,
+                "retry_execution_policy_fingerprint": execution_policy.fingerprint,
+                "retry_policy_fingerprint": retry_policy.fingerprint,
+            },
+            "revalidation": {
+                "performed": True,
+                "current_plan_id": current_plan["plan_id"],
+                "events_checked": len(cast(list[Any], retained_plan["events"])),
+                "exact_event_evidence_unchanged": True,
+            },
+            "selection": {
+                "planned_retryable_events": len(retryable_event_ids),
+                "executed_events": len(outcomes),
+                "max_events": execution_policy.max_events,
+            },
+            "outcomes": outcomes,
+            "outcome_counts": {
+                "succeeded": succeeded,
+                "failed": failed,
+            },
+            "execution": {
+                "requested": True,
+                "performed": True,
+                "external_requests_performed": len(outcomes),
+                "delivery_attempts_written": len(outcomes),
+            },
+            "concurrency_control": {
+                "performed": True,
+                "acquired": True,
+                "released": False,
+                "held_through_revalidation": True,
+                "held_through_attempt_persistence": True,
+                "model_version": lock_evidence["model_version"],
+                "scope": lock_evidence["scope"],
+                "key_fingerprint": lock_evidence["key_fingerprint"],
+            },
+            "response_bodies_recorded": False,
+            "plan_mutated": False,
+            "acknowledgement_mutated": False,
+            "dead_letter_mutated": False,
+        }
+
+    summary["concurrency_control"]["released"] = True
+    return summary
 
 
 def _write_summary(path: Path, summary: Mapping[str, Any]) -> None:
@@ -357,13 +384,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         if args.summary_json is not None:
             _write_summary(args.summary_json, summary)
+    except OverlapError:
+        print(
+            "Manual notification retry rejected: another notification delivery "
+            "execution is already active",
+            file=sys.stderr,
+        )
+        return 1
     except ValidationError as exc:
         print(f"Manual notification retry rejected: {exc}", file=sys.stderr)
         return 1
     except StorageError:
         print(
-            "Manual notification retry failed: PostgreSQL or attempt persistence "
-            "failed; remote receivers must deduplicate by Idempotency-Key",
+            "Manual notification retry failed: PostgreSQL, lock, or attempt "
+            "persistence failed; remote receivers must deduplicate by "
+            "Idempotency-Key",
             file=sys.stderr,
         )
         return 1
