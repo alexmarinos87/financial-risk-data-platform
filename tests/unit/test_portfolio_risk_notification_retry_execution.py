@@ -159,7 +159,6 @@ def _execute(
         "plan_path": plan_path,
         "confirm_plan_id": plan["plan_id"],
         "request_id": "RETRY-2026-001",
-        "executed_at": EXECUTED_AT,
         "config_path": config_path,
         "dsn": "postgresql://secret-value",
         "execute": True,
@@ -239,6 +238,50 @@ def test_disabled_execution_rejects_before_database_or_transport(
         )
     assert reads == []
     assert sends == []
+
+
+def test_execution_uses_clock_time_for_current_evidence_read(tmp_path: Path) -> None:
+    config_path = _write_config(tmp_path)
+    candidates = [_candidate()]
+    plan_path, plan = _write_plan(tmp_path, config_path, candidates)
+    as_of_values: list[datetime] = []
+
+    _execute(
+        plan_path=plan_path,
+        plan=plan,
+        config_path=config_path,
+        candidates=candidates,
+        reader=lambda **kwargs: (
+            as_of_values.append(kwargs["planned_at"]) or candidates
+        ),
+    )
+
+    assert as_of_values == [EXECUTED_AT]
+
+
+def test_plan_can_be_reviewed_before_enabling_separate_execution_gate(
+    tmp_path: Path,
+) -> None:
+    config_path = _write_config(tmp_path, execution_enabled=False)
+    candidates = [_candidate()]
+    plan_path, plan = _write_plan(tmp_path, config_path, candidates)
+
+    config_path.write_text(
+        yaml.safe_dump(
+            _config_payload(execution_enabled=True),
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    summary = _execute(
+        plan_path=plan_path,
+        plan=plan,
+        config_path=config_path,
+        candidates=candidates,
+    )
+
+    assert summary["execution"]["performed"] is True
+    assert summary["plan_id"] == plan["plan_id"]
 
 
 def test_exact_plan_executes_one_attempt_per_event_with_stable_identity(
