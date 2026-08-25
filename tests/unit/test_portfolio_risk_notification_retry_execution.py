@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -8,7 +10,7 @@ from typing import Any
 import pytest
 import yaml
 
-from src.common.exceptions import StorageError, ValidationError
+from src.common.exceptions import OverlapError, StorageError, ValidationError
 from src.orchestration.deliver_portfolio_risk_notifications import (
     DeliveryTransportError,
 )
@@ -18,6 +20,11 @@ from src.orchestration.execute_portfolio_risk_notification_retries import (
 )
 from src.orchestration.plan_portfolio_risk_notification_retries import (
     plan_portfolio_risk_notification_retries,
+)
+from src.orchestration.portfolio_risk_notification_delivery_lock import (
+    LOCK_KEY_FINGERPRINT,
+    LOCK_MODEL_VERSION,
+    LOCK_SCOPE,
 )
 from src.orchestration.portfolio_risk_notification_retry_execution_policy import (
     load_retry_execution_contract,
@@ -147,6 +154,16 @@ def _write_plan(
     return path, plan
 
 
+@contextmanager
+def _delivery_lock(**_: Any) -> Iterator[Mapping[str, Any]]:
+    yield {
+        "model_version": LOCK_MODEL_VERSION,
+        "scope": LOCK_SCOPE,
+        "key_fingerprint": LOCK_KEY_FINGERPRINT,
+        "acquired": True,
+    }
+
+
 def _execute(
     *,
     plan_path: Path,
@@ -167,6 +184,7 @@ def _execute(
         "attempt_writer": lambda _: None,
         "transport": lambda *_: 204,
         "clock": lambda: EXECUTED_AT,
+        "lock_factory": _delivery_lock,
     }
     parameters.update(kwargs)
     return execute_portfolio_risk_notification_retries(**parameters)
@@ -259,6 +277,33 @@ def test_execution_uses_clock_time_for_current_evidence_read(tmp_path: Path) -> 
     assert as_of_values == [EXECUTED_AT]
 
 
+def test_held_lock_rejects_before_current_evidence_or_transport(tmp_path: Path) -> None:
+    config_path = _write_config(tmp_path)
+    candidates = [_candidate()]
+    plan_path, plan = _write_plan(tmp_path, config_path, candidates)
+    reads: list[bool] = []
+    sends: list[bool] = []
+
+    @contextmanager
+    def held_lock(**_: Any) -> Iterator[Mapping[str, Any]]:
+        raise OverlapError("already holds")
+        yield {}
+
+    with pytest.raises(OverlapError, match="already holds"):
+        _execute(
+            plan_path=plan_path,
+            plan=plan,
+            config_path=config_path,
+            candidates=candidates,
+            reader=lambda **_: reads.append(True) or candidates,
+            transport=lambda *_: sends.append(True) or 204,
+            lock_factory=held_lock,
+        )
+
+    assert reads == []
+    assert sends == []
+
+
 def test_plan_can_be_reviewed_before_enabling_separate_execution_gate(
     tmp_path: Path,
 ) -> None:
@@ -335,6 +380,16 @@ def test_exact_plan_executes_one_attempt_per_event_with_stable_identity(
         "delivery_attempts_written": 2,
     }
     assert summary["revalidation"]["exact_event_evidence_unchanged"] is True
+    assert summary["concurrency_control"] == {
+        "performed": True,
+        "acquired": True,
+        "released": True,
+        "held_through_revalidation": True,
+        "held_through_attempt_persistence": True,
+        "model_version": LOCK_MODEL_VERSION,
+        "scope": LOCK_SCOPE,
+        "key_fingerprint": LOCK_KEY_FINGERPRINT,
+    }
     assert summary["plan_mutated"] is False
     assert summary["acknowledgement_mutated"] is False
     assert summary["dead_letter_mutated"] is False

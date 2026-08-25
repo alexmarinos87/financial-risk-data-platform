@@ -239,6 +239,8 @@ postgres-contract-check:
 	docker compose down -v --remove-orphans
 	docker compose up -d postgres
 	$(MAKE) local-db-wait
+	$(PYTHON) -m src.warehouse.notification_delivery_lock_contract_check \
+		--dsn "$(LOCAL_POSTGRES_DSN)"
 	$(PYTHON) -m src.warehouse.postgres_consistency \
 		--dsn "$(LOCAL_POSTGRES_DSN)" \
 		--check sql/consistency_checks.sql

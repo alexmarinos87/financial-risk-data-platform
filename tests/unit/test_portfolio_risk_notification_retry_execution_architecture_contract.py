@@ -34,6 +34,8 @@ def test_manual_retry_execution_is_exact_disabled_and_one_attempt_only() -> None
         "execution_started_at",
         "assert_retry_plan_is_current",
         "Idempotency-Key",
+        "acquire_notification_delivery_lock",
+        "held_through_revalidation",
         "response_bodies_recorded",
         "plan_mutated",
         "acknowledgement_mutated",
@@ -53,6 +55,7 @@ def test_manual_retry_execution_is_exact_disabled_and_one_attempt_only() -> None
         "events with existing delivery attempts require an exact retry plan",
         "initial_attempts_only",
         "environment if environment is not None else os.environ",
+        "acquire_notification_delivery_lock",
     ):
         assert required in delivery_source
     assert "time_module.sleep" not in delivery_source
@@ -86,7 +89,7 @@ def test_manual_retry_execution_is_exact_disabled_and_one_attempt_only() -> None
         "one new attempt",
         "no internal retry loop",
         "stable `Idempotency-Key`",
-        "fake readers, transports, clocks and attempt writers",
+        "fake readers, transports, clocks, attempt writers and delivery locks",
         "performs no external delivery",
         "does not",
         "terraform apply",
