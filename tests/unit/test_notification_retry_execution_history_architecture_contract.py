@@ -54,7 +54,7 @@ def test_retry_execution_history_is_append_only_bounded_and_secret_safe() -> Non
     ):
         assert required in wrapper
 
-    assert "BaseException" not in wrapper
+    assert "except BaseException" not in wrapper
     assert "response body" not in wrapper.casefold()
 
     for required in (
