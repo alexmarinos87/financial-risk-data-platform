@@ -5,12 +5,16 @@ def test_notification_delivery_is_serialized_before_evidence_and_network_io() ->
     lock_source = Path(
         "src/orchestration/portfolio_risk_notification_delivery_lock.py"
     ).read_text(encoding="utf-8")
+    contract_source = Path(
+        "src/warehouse/notification_delivery_lock_contract_check.py"
+    ).read_text(encoding="utf-8")
     initial_source = Path(
         "src/orchestration/deliver_portfolio_risk_notifications.py"
     ).read_text(encoding="utf-8")
     retry_source = Path(
         "src/orchestration/execute_portfolio_risk_notification_retries.py"
     ).read_text(encoding="utf-8")
+    makefile = Path("Makefile").read_text(encoding="utf-8")
     docs = Path(
         "docs/portfolio-risk-notification-delivery-locking.md"
     ).read_text(encoding="utf-8")
@@ -58,6 +62,21 @@ def test_notification_delivery_is_serialized_before_evidence_and_network_io() ->
     assert "held_through_revalidation" in retry_source
 
     for required in (
+        "contender_rejected",
+        "lock_reacquired_after_release",
+        "with acquire_notification_delivery_lock(dsn=dsn) as first",
+        "with acquire_notification_delivery_lock(dsn=dsn) as second",
+        "external_request_performed",
+        "delivery_attempt_written",
+    ):
+        assert required in contract_source
+    assert "src.warehouse.notification_delivery_lock_contract_check" in makefile
+    assert makefile.index("notification_delivery_lock_contract_check") < makefile.index(
+        "postgres_consistency",
+        makefile.index("postgres-contract-check:"),
+    )
+
+    for required in (
         "# PostgreSQL Notification Delivery Concurrency Control",
         "Primary arc42 block: `orchestration`",
         "non-blocking",
@@ -65,6 +84,7 @@ def test_notification_delivery_is_serialized_before_evidence_and_network_io() ->
         "before current-evidence revalidation",
         "held through current-evidence revalidation and attempt persistence",
         "stable notification `Idempotency-Key`",
+        "PostgreSQL 16 contention contract",
         "performs no webhook request",
         "terraform apply",
     ):
