@@ -5,6 +5,9 @@ def test_retry_execution_history_is_append_only_bounded_and_secret_safe() -> Non
     contract = Path(
         "src/warehouse/notification_retry_execution_contract.py"
     ).read_text(encoding="utf-8")
+    reader = Path(
+        "src/warehouse/notification_retry_execution_reader.py"
+    ).read_text(encoding="utf-8")
     recorder = Path(
         "src/warehouse/notification_retry_execution_recorder.py"
     ).read_text(encoding="utf-8")
@@ -37,6 +40,15 @@ def test_retry_execution_history_is_append_only_bounded_and_secret_safe() -> Non
         assert required in contract
 
     for required in (
+        "read_notification_retry_execution_request",
+        "where request_id = %s",
+        "document_sha256",
+        "validate_retry_execution_record",
+        "lookup failed before execution",
+    ):
+        assert required in reader.casefold()
+
+    for required in (
         "record_notification_retry_execution",
         "request_id already exists with different retry evidence",
         "record_id already exists with different retry evidence",
@@ -46,14 +58,22 @@ def test_retry_execution_history_is_append_only_bounded_and_secret_safe() -> Non
 
     for required in (
         "execute_portfolio_risk_notification_retries",
+        "read_notification_retry_execution_request",
         "tracking_transport",
         "tracking_writer",
         "record_notification_retry_execution",
         "RecordedRetryExecutionError",
+        "request_id already exists for a different notification retry plan",
         "--execute",
     ):
         assert required in wrapper
 
+    assert wrapper.index("if execute is not True") < wrapper.index(
+        "selected_history_reader"
+    )
+    assert wrapper.index("selected_history_reader") < wrapper.index(
+        "selected_clock ="
+    )
     assert "except BaseException" not in wrapper
     assert "response body" not in wrapper.casefold()
 
@@ -69,6 +89,7 @@ def test_retry_execution_history_is_append_only_bounded_and_secret_safe() -> Non
 
     assert "19_portfolio_risk_notification_retry_execution_schema.sql" in compose
     assert "retry_history_exact_retry_converged" in lock_check
+    assert "retry_history_preflight_read_validated" in lock_check
     assert "retry_history_append_only" in lock_check
 
     for required in (
