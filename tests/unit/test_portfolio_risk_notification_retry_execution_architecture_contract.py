@@ -52,10 +52,12 @@ def test_manual_retry_execution_is_exact_disabled_and_one_attempt_only() -> None
         "HAVING COALESCE(MAX(attempt.attempt_number), 0) = 0",
         "events with existing delivery attempts require an exact retry plan",
         "initial_attempts_only",
+        "environment if environment is not None else os.environ",
     ):
         assert required in delivery_source
     assert "time_module.sleep" not in delivery_source
     assert "for attempt_number in range" not in delivery_source
+    assert "ON CONFLICT (attempt_id) DO NOTHING" not in delivery_source
 
     for required in (
         "MAX_PLAN_FILE_BYTES",
