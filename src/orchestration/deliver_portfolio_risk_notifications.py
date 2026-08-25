@@ -5,7 +5,6 @@ import hashlib
 import json
 import os
 import sys
-import time as time_module
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Mapping, Sequence
@@ -16,9 +15,9 @@ from typing import Any
 from urllib.parse import urlparse
 from uuid import uuid4
 
-from ..common.config import load_yaml
-from ..common.exceptions import StorageError, ValidationError
-from ..warehouse.postgres_loader import DEFAULT_POSTGRES_DSN
+from src.common.config import load_yaml
+from src.common.exceptions import StorageError, ValidationError
+from src.warehouse.postgres_loader import DEFAULT_POSTGRES_DSN
 
 MODEL_VERSION = "portfolio-risk-webhook-delivery-v1"
 CHANNEL = "webhook"
@@ -30,7 +29,6 @@ MAX_BACKOFF_SECONDS = 60
 CandidateReader = Callable[..., list[dict[str, Any]]]
 AttemptWriter = Callable[[Mapping[str, Any]], None]
 Transport = Callable[[str, bytes, Mapping[str, str], float], int]
-Sleeper = Callable[[float], None]
 
 
 class DeliveryTransportError(RuntimeError):
@@ -210,6 +208,7 @@ def read_pending_delivery_candidates(
             pending.current_status,
             pending.ts_event,
             pending.payload_json
+        HAVING COALESCE(MAX(attempt.attempt_number), 0) = 0
         ORDER BY pending.ts_event, pending.event_id
         LIMIT %s
     """
@@ -332,8 +331,7 @@ def write_delivery_attempt(
     placeholders = ", ".join(["%s"] * len(columns))
     statement = (
         f"INSERT INTO {schema}.portfolio_risk_notification_delivery_attempts "
-        f"({quoted}) VALUES ({placeholders}) "
-        "ON CONFLICT (attempt_id) DO NOTHING"
+        f"({quoted}) VALUES ({placeholders})"
     )
     values = tuple(attempt[column] for column in columns)
     try:
@@ -354,10 +352,9 @@ def deliver_portfolio_risk_notifications(
     reader: CandidateReader | None = None,
     attempt_writer: AttemptWriter | None = None,
     transport: Transport | None = None,
-    sleeper: Sleeper | None = None,
 ) -> dict[str, Any]:
     config = load_webhook_delivery_config(config_path)
-    selected_environment = environment or os.environ
+    selected_environment = environment if environment is not None else os.environ
     raw_endpoint = selected_environment.get(config.endpoint_env)
     endpoint_host: str | None = None
     endpoint_value: str | None = None
@@ -378,6 +375,10 @@ def deliver_portfolio_risk_notifications(
         dsn=dsn,
         max_events=config.max_batch_events,
     )
+    if not isinstance(candidates, list):
+        raise StorageError("notification delivery reader returned invalid evidence")
+    if len(candidates) > config.max_batch_events:
+        raise ValidationError("notification delivery exceeds max_batch_events")
     plan = [
         {
             "attempts_so_far": int(candidate.get("attempts_so_far", 0)),
@@ -399,6 +400,7 @@ def deliver_portfolio_risk_notifications(
         "selection": {
             "candidates_selected": len(candidates),
             "max_batch_events": config.max_batch_events,
+            "initial_attempts_only": True,
         },
         "plan": plan,
         "execution": {
@@ -416,80 +418,70 @@ def deliver_portfolio_risk_notifications(
     if endpoint_value is None or endpoint_host is None:
         raise ValidationError("webhook endpoint was not resolved for execution")
 
+    for candidate in candidates:
+        attempts_so_far = candidate.get("attempts_so_far", 0)
+        if type(attempts_so_far) is not int or attempts_so_far < 0:
+            raise ValidationError("attempts_so_far must be a non-negative integer")
+        if attempts_so_far != 0:
+            raise ValidationError(
+                "events with existing delivery attempts require an exact retry plan"
+            )
+
     selected_transport = transport or _default_transport
-    selected_sleeper = sleeper or time_module.sleep
     selected_writer = attempt_writer or (
         lambda attempt: write_delivery_attempt(attempt, dsn=dsn)
     )
     succeeded = 0
     failed = 0
-    exhausted = 0
     attempts_recorded = 0
 
     for candidate in candidates:
         event_id = _required_text(candidate.get("event_id"), "event_id", 512)
-        attempts_so_far = candidate.get("attempts_so_far", 0)
-        if type(attempts_so_far) is not int or attempts_so_far < 0:
-            raise ValidationError("attempts_so_far must be a non-negative integer")
-        if attempts_so_far >= config.max_attempts_per_event:
-            exhausted += 1
-            continue
         payload = _canonical_payload(candidate)
         payload_sha256 = hashlib.sha256(payload).hexdigest()
-        event_succeeded = False
-        for attempt_number in range(
-            attempts_so_far + 1,
-            config.max_attempts_per_event + 1,
-        ):
-            attempted_at = datetime.now(timezone.utc)
-            outcome = "failed"
-            http_status: int | None = None
-            error_code: str | None = None
-            try:
-                http_status = selected_transport(
-                    endpoint_value,
-                    payload,
-                    {
-                        "Content-Type": "application/json",
-                        "Idempotency-Key": event_id,
-                        "User-Agent": "financial-risk-data-platform/1",
-                    },
-                    float(config.timeout_seconds),
-                )
-                if 200 <= http_status < 300:
-                    outcome = "succeeded"
-                else:
-                    error_code = f"http_{http_status}"
-            except DeliveryTransportError as exc:
-                error_code = str(exc)
-            attempt = {
-                "attempt_id": _attempt_id(event_id, attempt_number),
-                "model_version": MODEL_VERSION,
-                "event_id": event_id,
-                "channel": CHANNEL,
-                "attempt_number": attempt_number,
-                "idempotency_key": event_id,
-                "attempted_at": attempted_at,
-                "outcome": outcome,
-                "http_status": http_status,
-                "error_code": error_code,
-                "endpoint_host": endpoint_host,
-                "payload_sha256": payload_sha256,
-            }
-            selected_writer(attempt)
-            attempts_recorded += 1
-            if outcome == "succeeded":
-                succeeded += 1
-                event_succeeded = True
-                break
-            if attempt_number < config.max_attempts_per_event:
-                delay = min(
-                    config.initial_backoff_seconds
-                    * (2 ** (attempt_number - attempts_so_far - 1)),
-                    MAX_BACKOFF_SECONDS,
-                )
-                selected_sleeper(float(delay))
-        if not event_succeeded:
+        attempted_at = datetime.now(timezone.utc)
+        outcome = "failed"
+        http_status: int | None = None
+        error_code: str | None = None
+        try:
+            response_status = selected_transport(
+                endpoint_value,
+                payload,
+                {
+                    "Content-Type": "application/json",
+                    "Idempotency-Key": event_id,
+                    "User-Agent": "financial-risk-data-platform/1",
+                },
+                float(config.timeout_seconds),
+            )
+            if type(response_status) is not int or not 100 <= response_status <= 599:
+                raise ValidationError("webhook transport returned an invalid HTTP status")
+            http_status = response_status
+            if 200 <= response_status < 300:
+                outcome = "succeeded"
+            else:
+                error_code = f"http_{response_status}"
+        except DeliveryTransportError:
+            error_code = "network_error"
+        attempt = {
+            "attempt_id": _attempt_id(event_id, 1),
+            "model_version": MODEL_VERSION,
+            "event_id": event_id,
+            "channel": CHANNEL,
+            "attempt_number": 1,
+            "idempotency_key": event_id,
+            "attempted_at": attempted_at,
+            "outcome": outcome,
+            "http_status": http_status,
+            "error_code": error_code,
+            "endpoint_host": endpoint_host,
+            "payload_sha256": payload_sha256,
+        }
+        selected_writer(attempt)
+        attempts_recorded += 1
+        if outcome == "succeeded":
+            succeeded += 1
+        else:
             failed += 1
 
     summary["execution"] = {
@@ -497,7 +489,7 @@ def deliver_portfolio_risk_notifications(
         "performed": True,
         "succeeded": succeeded,
         "failed": failed,
-        "exhausted": exhausted,
+        "exhausted": 0,
         "attempts_recorded": attempts_recorded,
     }
     return summary
@@ -506,8 +498,8 @@ def deliver_portfolio_risk_notifications(
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Plan or manually deliver pending portfolio risk notifications to "
-            "one explicitly configured HTTPS webhook."
+            "Plan or manually make the first delivery attempt for pending "
+            "portfolio risk notifications."
         )
     )
     parser.add_argument(

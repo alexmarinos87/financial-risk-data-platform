@@ -70,7 +70,7 @@ def test_delivery_config_is_disabled_and_fingerprinted_deterministically() -> No
     assert first.fingerprint == second.fingerprint
 
 
-def test_plan_only_reads_candidates_without_transport_or_attempt_writes(
+def test_plan_only_reads_initial_candidates_without_transport_or_attempt_writes(
     tmp_path: Path,
 ) -> None:
     transports: list[bytes] = []
@@ -90,6 +90,7 @@ def test_plan_only_reads_candidates_without_transport_or_attempt_writes(
     assert transports == []
     assert attempts == []
     assert summary["execution"]["performed"] is False
+    assert summary["selection"]["initial_attempts_only"] is True
     assert summary["endpoint"] == {"configured": False, "host": None}
     assert "dsn" not in json.dumps(summary)
 
@@ -117,13 +118,11 @@ def test_execute_requires_reviewed_enablement_before_reading_candidates(
     assert reads == 0
 
 
-def test_failed_attempt_retries_then_succeeds_with_same_idempotency_key(
+def test_initial_delivery_failure_records_one_attempt_without_hidden_retry(
     tmp_path: Path,
 ) -> None:
-    statuses = iter([503, 204])
     calls: list[dict[str, Any]] = []
     attempts: list[dict[str, Any]] = []
-    sleeps: list[float] = []
 
     def transport(
         endpoint: str,
@@ -139,7 +138,7 @@ def test_failed_attempt_retries_then_succeeds_with_same_idempotency_key(
                 "timeout": timeout,
             }
         )
-        return next(statuses)
+        return 503
 
     summary = deliver_portfolio_risk_notifications(
         config_path=_write_config(tmp_path, enabled=True),
@@ -151,26 +150,22 @@ def test_failed_attempt_retries_then_succeeds_with_same_idempotency_key(
         reader=lambda **_: [_candidate()],
         attempt_writer=lambda attempt: attempts.append(dict(attempt)),
         transport=transport,
-        sleeper=sleeps.append,
     )
 
-    assert [attempt["outcome"] for attempt in attempts] == [
-        "failed",
-        "succeeded",
-    ]
-    assert [attempt["attempt_number"] for attempt in attempts] == [1, 2]
-    assert all(
-        call["headers"]["Idempotency-Key"] == "event-1" for call in calls
-    )
+    assert len(calls) == 1
+    assert len(attempts) == 1
+    assert attempts[0]["outcome"] == "failed"
+    assert attempts[0]["attempt_number"] == 1
+    assert attempts[0]["error_code"] == "http_503"
+    assert calls[0]["headers"]["Idempotency-Key"] == "event-1"
     assert calls[0]["payload"]["event_id"] == "event-1"
-    assert sleeps == [1.0]
     assert summary["execution"] == {
         "requested": True,
         "performed": True,
-        "succeeded": 1,
-        "failed": 0,
+        "succeeded": 0,
+        "failed": 1,
         "exhausted": 0,
-        "attempts_recorded": 2,
+        "attempts_recorded": 1,
     }
     assert "https://alerts.example.test/risk" not in json.dumps(summary)
     assert summary["endpoint"]["host"] == "alerts.example.test"
@@ -182,7 +177,7 @@ def test_network_failure_is_recorded_without_error_message_or_response_body(
     attempts: list[dict[str, Any]] = []
 
     def transport(*_: Any) -> int:
-        raise DeliveryTransportError("network_error")
+        raise DeliveryTransportError("arbitrary transport text")
 
     summary = deliver_portfolio_risk_notifications(
         config_path=_write_config(tmp_path, enabled=True, attempts=1),
@@ -194,37 +189,59 @@ def test_network_failure_is_recorded_without_error_message_or_response_body(
         reader=lambda **_: [_candidate()],
         attempt_writer=lambda attempt: attempts.append(dict(attempt)),
         transport=transport,
-        sleeper=lambda _: None,
     )
 
     assert attempts[0]["error_code"] == "network_error"
     assert attempts[0]["http_status"] is None
     assert summary["response_bodies_recorded"] is False
     assert summary["execution"]["failed"] == 1
+    assert "arbitrary transport text" not in json.dumps(summary)
 
 
-def test_exhausted_candidate_is_not_sent_again(tmp_path: Path) -> None:
+def test_candidate_with_prior_attempt_requires_exact_retry_plan_before_transport(
+    tmp_path: Path,
+) -> None:
     calls = 0
+    attempts: list[dict[str, Any]] = []
 
     def transport(*_: Any) -> int:
         nonlocal calls
         calls += 1
         return 204
 
-    summary = deliver_portfolio_risk_notifications(
-        config_path=_write_config(tmp_path, enabled=True, attempts=3),
-        dsn="dsn",
-        execute=True,
-        environment={
-            "RISK_NOTIFICATION_WEBHOOK_URL": "https://alerts.example.test/risk"
-        },
-        reader=lambda **_: [_candidate(attempts_so_far=3)],
-        attempt_writer=lambda _: None,
-        transport=transport,
-    )
+    with pytest.raises(ValidationError, match="exact retry plan"):
+        deliver_portfolio_risk_notifications(
+            config_path=_write_config(tmp_path, enabled=True, attempts=3),
+            dsn="dsn",
+            execute=True,
+            environment={
+                "RISK_NOTIFICATION_WEBHOOK_URL": "https://alerts.example.test/risk"
+            },
+            reader=lambda **_: [_candidate(attempts_so_far=1)],
+            attempt_writer=lambda attempt: attempts.append(dict(attempt)),
+            transport=transport,
+        )
 
     assert calls == 0
-    assert summary["execution"]["exhausted"] == 1
+    assert attempts == []
+
+
+def test_invalid_transport_status_fails_before_attempt_write(tmp_path: Path) -> None:
+    attempts: list[dict[str, Any]] = []
+
+    with pytest.raises(ValidationError, match="invalid HTTP status"):
+        deliver_portfolio_risk_notifications(
+            config_path=_write_config(tmp_path, enabled=True),
+            dsn="dsn",
+            execute=True,
+            environment={
+                "RISK_NOTIFICATION_WEBHOOK_URL": "https://alerts.example.test/risk"
+            },
+            reader=lambda **_: [_candidate()],
+            attempt_writer=lambda attempt: attempts.append(dict(attempt)),
+            transport=lambda *_: 999,
+        )
+    assert attempts == []
 
 
 def test_endpoint_must_be_https_without_embedded_credentials(
