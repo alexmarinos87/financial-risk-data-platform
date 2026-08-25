@@ -16,7 +16,11 @@ from urllib.parse import urlparse
 from uuid import uuid4
 
 from src.common.config import load_yaml
-from src.common.exceptions import StorageError, ValidationError
+from src.common.exceptions import OverlapError, StorageError, ValidationError
+from src.orchestration.portfolio_risk_notification_delivery_lock import (
+    DeliveryLockFactory,
+    acquire_notification_delivery_lock,
+)
 from src.warehouse.postgres_loader import DEFAULT_POSTGRES_DSN
 
 MODEL_VERSION = "portfolio-risk-webhook-delivery-v1"
@@ -343,42 +347,28 @@ def write_delivery_attempt(
         raise StorageError("Unable to persist notification delivery attempt") from None
 
 
-def deliver_portfolio_risk_notifications(
+def _read_and_validate_candidates(
     *,
-    config_path: Path,
+    reader: CandidateReader,
     dsn: str,
-    execute: bool = False,
-    environment: Mapping[str, str] | None = None,
-    reader: CandidateReader | None = None,
-    attempt_writer: AttemptWriter | None = None,
-    transport: Transport | None = None,
-) -> dict[str, Any]:
-    config = load_webhook_delivery_config(config_path)
-    selected_environment = environment if environment is not None else os.environ
-    raw_endpoint = selected_environment.get(config.endpoint_env)
-    endpoint_host: str | None = None
-    endpoint_value: str | None = None
-    if raw_endpoint:
-        endpoint_value, endpoint_host = _endpoint(raw_endpoint)
-    if execute:
-        if not config.enabled:
-            raise ValidationError(
-                "webhook delivery is disabled in reviewed configuration"
-            )
-        if endpoint_value is None or endpoint_host is None:
-            raise ValidationError(
-                f"webhook endpoint environment variable {config.endpoint_env} is not set"
-            )
-
-    selected_reader = reader or read_pending_delivery_candidates
-    candidates = selected_reader(
-        dsn=dsn,
-        max_events=config.max_batch_events,
-    )
+    max_events: int,
+) -> list[dict[str, Any]]:
+    candidates = reader(dsn=dsn, max_events=max_events)
     if not isinstance(candidates, list):
         raise StorageError("notification delivery reader returned invalid evidence")
-    if len(candidates) > config.max_batch_events:
+    if len(candidates) > max_events:
         raise ValidationError("notification delivery exceeds max_batch_events")
+    return candidates
+
+
+def _delivery_summary(
+    *,
+    config: WebhookDeliveryConfig,
+    endpoint_host: str | None,
+    candidates: list[dict[str, Any]],
+    execute: bool,
+    lock_evidence: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     plan = [
         {
             "attempts_so_far": int(candidate.get("attempts_so_far", 0)),
@@ -389,7 +379,20 @@ def deliver_portfolio_risk_notifications(
         }
         for candidate in candidates
     ]
-    summary: dict[str, Any] = {
+    concurrency_control = {
+        "performed": lock_evidence is not None,
+        "acquired": lock_evidence is not None,
+        "released": False,
+        "held_through_attempt_persistence": lock_evidence is not None,
+        "model_version": (
+            lock_evidence.get("model_version") if lock_evidence is not None else None
+        ),
+        "scope": lock_evidence.get("scope") if lock_evidence is not None else None,
+        "key_fingerprint": (
+            lock_evidence.get("key_fingerprint") if lock_evidence is not None else None
+        ),
+    }
+    return {
         "run_id": str(uuid4()),
         "config_fingerprint": config.fingerprint,
         "channel": CHANNEL,
@@ -411,13 +414,20 @@ def deliver_portfolio_risk_notifications(
             "exhausted": 0,
             "attempts_recorded": 0,
         },
+        "concurrency_control": concurrency_control,
         "response_bodies_recorded": False,
     }
-    if not execute or not candidates:
-        return summary
-    if endpoint_value is None or endpoint_host is None:
-        raise ValidationError("webhook endpoint was not resolved for execution")
 
+
+def _execute_initial_attempts(
+    *,
+    candidates: list[dict[str, Any]],
+    endpoint: str,
+    endpoint_host: str,
+    config: WebhookDeliveryConfig,
+    writer: AttemptWriter,
+    transport: Transport,
+) -> dict[str, int | bool]:
     for candidate in candidates:
         attempts_so_far = candidate.get("attempts_so_far", 0)
         if type(attempts_so_far) is not int or attempts_so_far < 0:
@@ -427,14 +437,9 @@ def deliver_portfolio_risk_notifications(
                 "events with existing delivery attempts require an exact retry plan"
             )
 
-    selected_transport = transport or _default_transport
-    selected_writer = attempt_writer or (
-        lambda attempt: write_delivery_attempt(attempt, dsn=dsn)
-    )
     succeeded = 0
     failed = 0
     attempts_recorded = 0
-
     for candidate in candidates:
         event_id = _required_text(candidate.get("event_id"), "event_id", 512)
         payload = _canonical_payload(candidate)
@@ -444,8 +449,8 @@ def deliver_portfolio_risk_notifications(
         http_status: int | None = None
         error_code: str | None = None
         try:
-            response_status = selected_transport(
-                endpoint_value,
+            response_status = transport(
+                endpoint,
                 payload,
                 {
                     "Content-Type": "application/json",
@@ -477,21 +482,96 @@ def deliver_portfolio_risk_notifications(
             "endpoint_host": endpoint_host,
             "payload_sha256": payload_sha256,
         }
-        selected_writer(attempt)
+        writer(attempt)
         attempts_recorded += 1
         if outcome == "succeeded":
             succeeded += 1
         else:
             failed += 1
 
-    summary["execution"] = {
+    return {
         "requested": True,
-        "performed": True,
+        "performed": bool(candidates),
         "succeeded": succeeded,
         "failed": failed,
         "exhausted": 0,
         "attempts_recorded": attempts_recorded,
     }
+
+
+def deliver_portfolio_risk_notifications(
+    *,
+    config_path: Path,
+    dsn: str,
+    execute: bool = False,
+    environment: Mapping[str, str] | None = None,
+    reader: CandidateReader | None = None,
+    attempt_writer: AttemptWriter | None = None,
+    transport: Transport | None = None,
+    lock_factory: DeliveryLockFactory | None = None,
+) -> dict[str, Any]:
+    config = load_webhook_delivery_config(config_path)
+    selected_environment = environment if environment is not None else os.environ
+    raw_endpoint = selected_environment.get(config.endpoint_env)
+    endpoint_host: str | None = None
+    endpoint_value: str | None = None
+    if raw_endpoint:
+        endpoint_value, endpoint_host = _endpoint(raw_endpoint)
+    if execute:
+        if not config.enabled:
+            raise ValidationError(
+                "webhook delivery is disabled in reviewed configuration"
+            )
+        if endpoint_value is None or endpoint_host is None:
+            raise ValidationError(
+                f"webhook endpoint environment variable {config.endpoint_env} is not set"
+            )
+
+    selected_reader = reader or read_pending_delivery_candidates
+    if not execute:
+        candidates = _read_and_validate_candidates(
+            reader=selected_reader,
+            dsn=dsn,
+            max_events=config.max_batch_events,
+        )
+        return _delivery_summary(
+            config=config,
+            endpoint_host=endpoint_host,
+            candidates=candidates,
+            execute=False,
+        )
+
+    if endpoint_value is None or endpoint_host is None:
+        raise ValidationError("webhook endpoint was not resolved for execution")
+    selected_writer = attempt_writer or (
+        lambda attempt: write_delivery_attempt(attempt, dsn=dsn)
+    )
+    selected_transport = transport or _default_transport
+    selected_lock_factory = lock_factory or acquire_notification_delivery_lock
+
+    with selected_lock_factory(dsn=dsn) as lock_evidence:
+        candidates = _read_and_validate_candidates(
+            reader=selected_reader,
+            dsn=dsn,
+            max_events=config.max_batch_events,
+        )
+        summary = _delivery_summary(
+            config=config,
+            endpoint_host=endpoint_host,
+            candidates=candidates,
+            execute=True,
+            lock_evidence=lock_evidence,
+        )
+        summary["execution"] = _execute_initial_attempts(
+            candidates=candidates,
+            endpoint=endpoint_value,
+            endpoint_host=endpoint_host,
+            config=config,
+            writer=selected_writer,
+            transport=selected_transport,
+        )
+
+    summary["concurrency_control"]["released"] = True
     return summary
 
 
@@ -543,6 +623,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         if args.summary_json is not None:
             _write_summary(args.summary_json, summary)
+    except OverlapError:
+        print(
+            "Webhook delivery rejected: another notification delivery execution "
+            "is already active",
+            file=sys.stderr,
+        )
+        return 1
     except ValidationError:
         print(
             "Webhook delivery failed: configuration, endpoint, candidate, or "
@@ -552,8 +639,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
     except StorageError:
         print(
-            "Webhook delivery failed: PostgreSQL or attempt persistence failed; "
-            "remote receivers should deduplicate by Idempotency-Key",
+            "Webhook delivery failed: PostgreSQL, lock, or attempt persistence "
+            "failed; remote receivers should deduplicate by Idempotency-Key",
             file=sys.stderr,
         )
         return 1
