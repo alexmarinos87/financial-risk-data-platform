@@ -7,10 +7,12 @@ notifications while retaining append-only evidence:
 
 ```text
 current pending notification outbox
+  -> acquire shared PostgreSQL delivery lock
   -> exclude delivered events and every event with an existing attempt
   -> bounded manual batch
   -> one HTTPS POST with stable Idempotency-Key
   -> append-only PostgreSQL delivery attempt
+  -> release shared delivery lock
   -> pending or succeeded operational views
 ```
 
@@ -30,6 +32,24 @@ or recipient. Normal invocation is plan-only. External delivery requires both:
 The endpoint must be HTTPS and may not contain embedded credentials or a URL
 fragment. Only the endpoint host is recorded in evidence. The full URL and
 environment value are not written to summaries or the database.
+
+## Shared concurrency control
+
+Plan-only invocation performs no external request or mutation and does not acquire a
+lock. Explicit delivery acquires the non-blocking PostgreSQL advisory lock defined
+by:
+
+```text
+portfolio-risk-notification-delivery-lock-v1
+```
+
+The lock is acquired before candidate selection and held through every network
+request and append-only attempt insert. A second local operator or separate checkout
+using the same PostgreSQL database is rejected immediately while the lock is held.
+It performs no candidate read or webhook request.
+
+The summary exposes the lock model, scope and a credential-free key fingerprint.
+The raw advisory key and PostgreSQL DSN are not retained.
 
 ## Initial-attempt boundary
 
@@ -70,9 +90,10 @@ attempt number
 portfolio-risk-webhook-delivery-v1
 ```
 
-There remains an unavoidable failure window in which the remote receiver accepts a
-request but local attempt persistence fails. The stable `Idempotency-Key` is the
-control for that ambiguity; receivers must deduplicate it.
+The shared lock prevents simultaneous local senders. There remains an unavoidable
+failure window in which the remote receiver accepts a request but local attempt
+persistence fails. The stable `Idempotency-Key` is the control for that ambiguity;
+receivers must deduplicate it.
 
 ## Evidence boundary
 
@@ -89,6 +110,9 @@ Each attempt stores:
 Response bodies, endpoint paths, credentials, headers containing secrets and
 arbitrary exception messages are never stored. Invalid transport status values fail
 before an attempt row is written.
+
+The execution summary also declares whether concurrency control was acquired,
+released and held through attempt persistence.
 
 ## Operator commands
 
@@ -122,7 +146,8 @@ plan instead of invoking this adapter again:
   --summary-json .demo/notification-retry-plan.json
 ```
 
-The separate P4c command consumes the exact resulting plan.
+The separate P4c command consumes the exact resulting plan and uses the same shared
+delivery lock before current-evidence revalidation.
 
 ## PostgreSQL serving
 
