@@ -11,6 +11,8 @@ from typing import Any, cast
 
 from src.common.exceptions import OverlapError, StorageError, ValidationError
 from src.orchestration.deliver_portfolio_risk_notifications import (
+    DEFAULT_DESTINATION_CONFIG,
+    DEFAULT_DESTINATION_ID,
     AttemptWriter,
     Transport,
     _default_transport,
@@ -32,6 +34,15 @@ from src.orchestration.portfolio_risk_notification_retry_execution_policy import
 from src.orchestration.portfolio_risk_notification_retry_plan_contract import (
     load_retry_plan,
 )
+from src.warehouse.notification_retry_destination_binding_contract import (
+    build_retry_destination_binding,
+)
+from src.warehouse.notification_retry_destination_binding_reader import (
+    read_notification_retry_destination_binding,
+)
+from src.warehouse.notification_retry_destination_binding_recorder import (
+    record_notification_retry_destination_binding,
+)
 from src.warehouse.notification_retry_execution_contract import (
     build_retry_execution_record,
     validate_retry_execution_record,
@@ -48,6 +59,8 @@ Clock = Callable[[], datetime]
 Executor = Callable[..., dict[str, Any]]
 Recorder = Callable[..., dict[str, Any]]
 HistoryReader = Callable[..., dict[str, Any] | None]
+DestinationRecorder = Callable[..., dict[str, Any]]
+DestinationReader = Callable[..., dict[str, Any] | None]
 
 
 class RecordedRetryExecutionError(RuntimeError):
@@ -56,10 +69,14 @@ class RecordedRetryExecutionError(RuntimeError):
         *,
         failure_code: str,
         history: Mapping[str, Any],
+        destination_history: Mapping[str, Any] | None = None,
     ) -> None:
         super().__init__(failure_code)
         self.failure_code = failure_code
         self.history = dict(history)
+        self.destination_history = (
+            None if destination_history is None else dict(destination_history)
+        )
 
 
 def _failure_code(exc: Exception) -> str:
@@ -130,6 +147,37 @@ def _existing_terminal_result(
     )
 
 
+def _legacy_execution_summary(summary: Mapping[str, Any]) -> dict[str, Any]:
+    legacy = dict(summary)
+    legacy.pop("destination_authority", None)
+    return legacy
+
+
+def _authority_from_summary(summary: Mapping[str, Any]) -> dict[str, Any] | None:
+    value = summary.get("destination_authority")
+    return dict(value) if isinstance(value, Mapping) else None
+
+
+def _record_destination_binding(
+    *,
+    dsn: str,
+    record: Mapping[str, Any],
+    destination_authority: Mapping[str, Any] | None,
+    recorder: DestinationRecorder | None,
+) -> dict[str, Any] | None:
+    if destination_authority is None or recorder is None:
+        return None
+    binding = build_retry_destination_binding(
+        record_id=cast(str, record["record_id"]),
+        request_id=cast(str, record["request_id"]),
+        plan_id=cast(str, record["plan_id"]),
+        execution_id=cast(str | None, record["execution_id"]),
+        destination_authority=destination_authority,
+        recorded_at=cast(str, record["recorded_at"]),
+    )
+    return recorder(dsn=dsn, binding=binding)
+
+
 def execute_and_record_portfolio_risk_notification_retries(
     *,
     plan_path: Path,
@@ -138,10 +186,14 @@ def execute_and_record_portfolio_risk_notification_retries(
     config_path: Path,
     dsn: str,
     execute: bool = False,
+    destination_config_path: Path | None = None,
+    destination_id: str = DEFAULT_DESTINATION_ID,
     environment: Mapping[str, str] | None = None,
     executor: Executor | None = None,
     recorder: Recorder | None = None,
     history_reader: HistoryReader | None = None,
+    destination_binding_recorder: DestinationRecorder | None = None,
+    destination_binding_reader: DestinationReader | None = None,
     transport: Transport | None = None,
     attempt_writer: AttemptWriter | None = None,
     clock: Clock | None = None,
@@ -160,19 +212,38 @@ def execute_and_record_portfolio_risk_notification_retries(
         raise ValidationError("confirm_plan_id does not match the retained retry plan")
 
     selected_history_reader = history_reader
+    selected_destination_reader = destination_binding_reader
     if selected_history_reader is None and recorder is None:
         selected_history_reader = read_notification_retry_execution_request
+    if (
+        selected_destination_reader is None
+        and recorder is None
+        and destination_binding_recorder is None
+    ):
+        selected_destination_reader = read_notification_retry_destination_binding
     if selected_history_reader is not None:
         existing = selected_history_reader(
             dsn=dsn,
             request_id=selected_request_id,
         )
         if existing is not None:
-            return _existing_terminal_result(
+            result = _existing_terminal_result(
                 existing=existing,
                 request_id=selected_request_id,
                 plan_id=plan_id,
             )
+            record_value = existing.get("record")
+            if selected_destination_reader is not None and isinstance(
+                record_value,
+                Mapping,
+            ):
+                result["destination_history"] = selected_destination_reader(
+                    dsn=dsn,
+                    record_id=record_value["record_id"],
+                )
+            else:
+                result["destination_history"] = None
+            return result
 
     selected_clock = clock or (lambda: datetime.now(timezone.utc))
     started_at = aware_utc(selected_clock(), "recorded execution started_at")
@@ -197,9 +268,20 @@ def execute_and_record_portfolio_risk_notification_retries(
     selected_environment = environment if environment is not None else os.environ
     selected_executor = executor or execute_portfolio_risk_notification_retries
     selected_recorder = recorder or record_notification_retry_execution
+    selected_destination_recorder = destination_binding_recorder
+    if selected_destination_recorder is None and recorder is None:
+        selected_destination_recorder = record_notification_retry_destination_binding
 
     requested_event_ids: list[str] = []
     persisted_attempts: list[dict[str, Any]] = []
+    observed_authority: dict[str, Any] | None = None
+
+    def observe_destination_authority(value: Mapping[str, Any]) -> None:
+        nonlocal observed_authority
+        candidate = dict(value)
+        if observed_authority is not None and observed_authority != candidate:
+            raise ValidationError("destination authority changed during retry execution")
+        observed_authority = candidate
 
     def tracking_transport(
         endpoint: str,
@@ -239,6 +321,8 @@ def execute_and_record_portfolio_risk_notification_retries(
             confirm_plan_id=confirm_plan_id,
             request_id=selected_request_id,
             config_path=config_path,
+            destination_config_path=destination_config_path,
+            destination_id=destination_id,
             dsn=dsn,
             execute=execute,
             environment=selected_environment,
@@ -247,7 +331,11 @@ def execute_and_record_portfolio_risk_notification_retries(
             transport=tracking_transport,
             clock=executor_clock,
             lock_factory=lock_factory,
+            destination_authority_observer=observe_destination_authority,
         )
+        summary_authority = _authority_from_summary(execution_summary)
+        if summary_authority is not None:
+            observe_destination_authority(summary_authority)
         outcomes = execution_summary.get("outcomes")
         if not isinstance(outcomes, list):
             raise ValidationError("retry execution summary outcomes are unavailable")
@@ -280,7 +368,7 @@ def execute_and_record_portfolio_risk_notification_retries(
             attempt_ids=attempt_ids,
             requested_event_ids=event_ids,
             persisted_event_ids=event_ids,
-            execution_summary=execution_summary,
+            execution_summary=_legacy_execution_summary(execution_summary),
         )
     except Exception as exc:
         finished_at = _next_utc(
@@ -340,15 +428,29 @@ def execute_and_record_portfolio_risk_notification_retries(
             lock_released=None,
         )
         history = selected_recorder(dsn=dsn, record=record)
+        destination_history = _record_destination_binding(
+            dsn=dsn,
+            record=record,
+            destination_authority=observed_authority,
+            recorder=selected_destination_recorder,
+        )
         raise RecordedRetryExecutionError(
             failure_code=cast(str, record["failure_code"]),
             history=history,
+            destination_history=destination_history,
         ) from None
 
     history = selected_recorder(dsn=dsn, record=record)
+    destination_history = _record_destination_binding(
+        dsn=dsn,
+        record=record,
+        destination_authority=observed_authority,
+        recorder=selected_destination_recorder,
+    )
     return {
         "execution_summary": execution_summary,
         "history": history,
+        "destination_history": destination_history,
     }
 
 
@@ -384,6 +486,12 @@ def _build_parser() -> argparse.ArgumentParser:
         default=Path("config/notification_delivery.yaml"),
     )
     parser.add_argument(
+        "--destination-config",
+        type=Path,
+        default=DEFAULT_DESTINATION_CONFIG,
+    )
+    parser.add_argument("--destination-id", default=DEFAULT_DESTINATION_ID)
+    parser.add_argument(
         "--dsn",
         default=os.environ.get("WAREHOUSE_POSTGRES_DSN", DEFAULT_POSTGRES_DSN),
     )
@@ -400,6 +508,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             confirm_plan_id=args.confirm_plan_id,
             request_id=args.request_id,
             config_path=args.config,
+            destination_config_path=args.destination_config,
+            destination_id=args.destination_id,
             dsn=args.dsn,
             execute=args.execute,
         )
