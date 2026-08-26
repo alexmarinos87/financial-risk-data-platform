@@ -273,7 +273,7 @@ def execute_portfolio_risk_notification_retries(
         }
         event_types = _event_types_for_retryable_events(
             retryable_event_ids=retryable_event_ids,
-            event_by_id=event_by_id,
+            event_by_id=candidate_by_id,
         )
         authority_evaluated_at = _clock_utc(
             selected_clock,
