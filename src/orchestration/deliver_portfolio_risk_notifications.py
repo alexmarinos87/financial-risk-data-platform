@@ -21,10 +21,15 @@ from src.orchestration.portfolio_risk_notification_delivery_lock import (
     DeliveryLockFactory,
     acquire_notification_delivery_lock,
 )
+from src.orchestration.portfolio_risk_notification_destination_authority import (
+    resolve_notification_destination_authority,
+)
 from src.warehouse.postgres_loader import DEFAULT_POSTGRES_DSN
 
 MODEL_VERSION = "portfolio-risk-webhook-delivery-v1"
 CHANNEL = "webhook"
+DEFAULT_DESTINATION_CONFIG = Path("config/notification_destinations.yaml")
+DEFAULT_DESTINATION_ID = "risk-operations-webhook"
 MAX_BATCH_EVENTS = 100
 MAX_ATTEMPTS_PER_EVENT = 10
 MAX_TIMEOUT_SECONDS = 30
@@ -33,6 +38,7 @@ MAX_BACKOFF_SECONDS = 60
 CandidateReader = Callable[..., list[dict[str, Any]]]
 AttemptWriter = Callable[[Mapping[str, Any]], None]
 Transport = Callable[[str, bytes, Mapping[str, str], float], int]
+Clock = Callable[[], datetime]
 
 
 class DeliveryTransportError(RuntimeError):
@@ -201,7 +207,6 @@ def read_pending_delivery_candidates(
         GROUP BY
             pending.event_id,
             pending.event_type,
-            pending.transition_type,
             pending.policy_id,
             pending.policy_fingerprint,
             pending.portfolio_id,
@@ -211,7 +216,8 @@ def read_pending_delivery_candidates(
             pending.subject_key,
             pending.current_status,
             pending.ts_event,
-            pending.payload_json
+            pending.payload_json,
+            pending.transition_type
         HAVING COALESCE(MAX(attempt.attempt_number), 0) = 0
         ORDER BY pending.ts_event, pending.event_id
         LIMIT %s
@@ -361,12 +367,20 @@ def _read_and_validate_candidates(
     return candidates
 
 
+def _event_types(candidates: Sequence[Mapping[str, Any]]) -> list[str]:
+    return [
+        _required_text(candidate.get("event_type"), "event_type")
+        for candidate in candidates
+    ]
+
+
 def _delivery_summary(
     *,
     config: WebhookDeliveryConfig,
     endpoint_host: str | None,
     candidates: list[dict[str, Any]],
     execute: bool,
+    destination_authority: Mapping[str, Any],
     lock_evidence: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     plan = [
@@ -396,6 +410,7 @@ def _delivery_summary(
         "run_id": str(uuid4()),
         "config_fingerprint": config.fingerprint,
         "channel": CHANNEL,
+        "destination_authority": dict(destination_authority),
         "endpoint": {
             "configured": endpoint_host is not None,
             "host": endpoint_host,
@@ -504,14 +519,28 @@ def deliver_portfolio_risk_notifications(
     config_path: Path,
     dsn: str,
     execute: bool = False,
+    destination_config_path: Path | None = None,
+    destination_id: str = DEFAULT_DESTINATION_ID,
     environment: Mapping[str, str] | None = None,
     reader: CandidateReader | None = None,
     attempt_writer: AttemptWriter | None = None,
     transport: Transport | None = None,
     lock_factory: DeliveryLockFactory | None = None,
+    clock: Clock | None = None,
 ) -> dict[str, Any]:
     config = load_webhook_delivery_config(config_path)
+    sibling_destination = config_path.parent / "notification_destinations.yaml"
+    selected_destination_path = (
+        destination_config_path
+        if destination_config_path is not None
+        else (
+            sibling_destination
+            if sibling_destination.is_file()
+            else DEFAULT_DESTINATION_CONFIG
+        )
+    )
     selected_environment = environment if environment is not None else os.environ
+    selected_clock = clock or (lambda: datetime.now(timezone.utc))
     raw_endpoint = selected_environment.get(config.endpoint_env)
     endpoint_host: str | None = None
     endpoint_value: str | None = None
@@ -534,11 +563,20 @@ def deliver_portfolio_risk_notifications(
             dsn=dsn,
             max_events=config.max_batch_events,
         )
+        destination_authority = resolve_notification_destination_authority(
+            destination_config_path=selected_destination_path,
+            destination_id=destination_id,
+            delivery_endpoint_env=config.endpoint_env,
+            evaluated_at=selected_clock(),
+            event_types=_event_types(candidates),
+            require_active=False,
+        )
         return _delivery_summary(
             config=config,
             endpoint_host=endpoint_host,
             candidates=candidates,
             execute=False,
+            destination_authority=destination_authority,
         )
 
     if endpoint_value is None or endpoint_host is None:
@@ -555,11 +593,20 @@ def deliver_portfolio_risk_notifications(
             dsn=dsn,
             max_events=config.max_batch_events,
         )
+        destination_authority = resolve_notification_destination_authority(
+            destination_config_path=selected_destination_path,
+            destination_id=destination_id,
+            delivery_endpoint_env=config.endpoint_env,
+            evaluated_at=selected_clock(),
+            event_types=_event_types(candidates),
+            require_active=True,
+        )
         summary = _delivery_summary(
             config=config,
             endpoint_host=endpoint_host,
             candidates=candidates,
             execute=True,
+            destination_authority=destination_authority,
             lock_evidence=lock_evidence,
         )
         summary["execution"] = _execute_initial_attempts(
@@ -588,6 +635,15 @@ def _build_parser() -> argparse.ArgumentParser:
         default=Path("config/notification_delivery.yaml"),
     )
     parser.add_argument(
+        "--destination-config",
+        type=Path,
+        default=DEFAULT_DESTINATION_CONFIG,
+    )
+    parser.add_argument(
+        "--destination-id",
+        default=DEFAULT_DESTINATION_ID,
+    )
+    parser.add_argument(
         "--dsn",
         default=os.environ.get(
             "WAREHOUSE_POSTGRES_DSN",
@@ -600,15 +656,17 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _write_summary(path: Path, summary: Mapping[str, Any]) -> None:
+    if path.is_symlink():
+        raise StorageError("webhook delivery summary must not be a symbolic link")
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
     try:
         temporary.write_text(
-            json.dumps(summary, indent=2, sort_keys=True) + "\n",
+            json.dumps(summary, indent=2, sort_keys=True, allow_nan=False) + "\n",
             encoding="utf-8",
         )
         temporary.replace(path)
-    except OSError:
+    except (OSError, TypeError, ValueError):
         temporary.unlink(missing_ok=True)
         raise StorageError("Unable to write webhook delivery summary") from None
 
@@ -618,6 +676,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         summary = deliver_portfolio_risk_notifications(
             config_path=args.config,
+            destination_config_path=args.destination_config,
+            destination_id=args.destination_id,
             dsn=args.dsn,
             execute=args.execute,
         )
@@ -632,8 +692,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
     except ValidationError:
         print(
-            "Webhook delivery failed: configuration, endpoint, candidate, or "
-            "options were invalid",
+            "Webhook delivery failed: configuration, destination, endpoint, "
+            "candidate, or options were invalid",
             file=sys.stderr,
         )
         return 1
@@ -651,7 +711,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 1
 
-    print(json.dumps(summary, sort_keys=True))
+    print(json.dumps(summary, sort_keys=True, allow_nan=False))
     return 0
 
 

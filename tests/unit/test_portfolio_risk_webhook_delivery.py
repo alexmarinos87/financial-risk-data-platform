@@ -38,6 +38,76 @@ def _config_payload(*, enabled: bool = False, attempts: int = 3):
     }
 
 
+def _destination_payload(
+    *,
+    enabled: bool,
+    endpoint_env: str = "RISK_NOTIFICATION_WEBHOOK_URL",
+    allowed_event_types: list[str] | None = None,
+) -> dict[str, Any]:
+    activation: dict[str, Any]
+    if enabled:
+        activation = {
+            "enabled": True,
+            "change_request_id": "CHG-2026-DELIVERY",
+            "reviewed_by": ["risk-control-reviewer"],
+            "reviewed_at": "2026-01-01T00:00:00Z",
+            "review_expires_at": "2027-01-01T00:00:00Z",
+        }
+    else:
+        activation = {
+            "enabled": False,
+            "change_request_id": None,
+            "reviewed_by": [],
+            "reviewed_at": None,
+            "review_expires_at": None,
+        }
+    return {
+        "model_version": "portfolio-risk-notification-destination-v1",
+        "destinations": {
+            "risk-operations-webhook": {
+                "channel": "webhook",
+                "endpoint_env": endpoint_env,
+                "owner": {
+                    "team": "risk-operations",
+                    "contact": "risk-operations-oncall",
+                },
+                "purpose": "portfolio-risk-breach-lifecycle",
+                "recipient_scope": "risk-operations",
+                "data_classification": "internal",
+                "allowed_event_types": allowed_event_types
+                or [
+                    "breach_escalated",
+                    "breach_opened",
+                    "breach_resolved",
+                ],
+                "activation": activation,
+            }
+        },
+    }
+
+
+def _write_destination(
+    tmp_path: Path,
+    *,
+    enabled: bool,
+    endpoint_env: str = "RISK_NOTIFICATION_WEBHOOK_URL",
+    allowed_event_types: list[str] | None = None,
+) -> Path:
+    path = tmp_path / "notification_destinations.yaml"
+    path.write_text(
+        yaml.safe_dump(
+            _destination_payload(
+                enabled=enabled,
+                endpoint_env=endpoint_env,
+                allowed_event_types=allowed_event_types,
+            ),
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
 def _write_config(tmp_path: Path, *, enabled: bool, attempts: int = 3) -> Path:
     path = tmp_path / "delivery.yaml"
     path.write_text(
@@ -47,13 +117,18 @@ def _write_config(tmp_path: Path, *, enabled: bool, attempts: int = 3) -> Path:
         ),
         encoding="utf-8",
     )
+    _write_destination(tmp_path, enabled=enabled)
     return path
 
 
-def _candidate(*, attempts_so_far: int = 0) -> dict[str, Any]:
+def _candidate(
+    *,
+    attempts_so_far: int = 0,
+    event_type: str = "breach_opened",
+) -> dict[str, Any]:
     return {
         "event_id": "event-1",
-        "event_type": "breach_opened",
+        "event_type": event_type,
         "transition_type": "opened",
         "policy_id": "us-tech-standard",
         "policy_fingerprint": "policy-1",
@@ -110,6 +185,7 @@ def test_plan_only_reads_initial_candidates_without_transport_attempt_or_lock(
         ),
         attempt_writer=lambda attempt: attempts.append(dict(attempt)),
         lock_factory=lock,
+        clock=lambda: datetime(2026, 6, 1, tzinfo=timezone.utc),
     )
 
     assert transports == []
@@ -119,6 +195,8 @@ def test_plan_only_reads_initial_candidates_without_transport_attempt_or_lock(
     assert summary["selection"]["initial_attempts_only"] is True
     assert summary["endpoint"] == {"configured": False, "host": None}
     assert summary["concurrency_control"]["performed"] is False
+    assert summary["destination_authority"]["active"] is False
+    assert summary["destination_authority"]["activation"]["status"] == "disabled"
     assert "dsn" not in json.dumps(summary)
 
 
@@ -173,6 +251,76 @@ def test_held_lock_rejects_before_candidate_read_or_transport(tmp_path: Path) ->
     assert sends == []
 
 
+def test_inactive_destination_rejects_before_transport(tmp_path: Path) -> None:
+    config_path = _write_config(tmp_path, enabled=True)
+    _write_destination(tmp_path, enabled=False)
+    sends: list[bool] = []
+    attempts: list[dict[str, Any]] = []
+
+    with pytest.raises(ValidationError, match="not active: disabled"):
+        deliver_portfolio_risk_notifications(
+            config_path=config_path,
+            dsn="dsn",
+            execute=True,
+            environment={
+                "RISK_NOTIFICATION_WEBHOOK_URL": "https://alerts.example.test/risk"
+            },
+            reader=lambda **_: [_candidate()],
+            attempt_writer=lambda attempt: attempts.append(dict(attempt)),
+            transport=lambda *_: sends.append(True) or 204,
+            lock_factory=_delivery_lock,
+            clock=lambda: datetime(2026, 6, 1, tzinfo=timezone.utc),
+        )
+
+    assert sends == []
+    assert attempts == []
+
+
+def test_destination_endpoint_identity_must_match_delivery_config(
+    tmp_path: Path,
+) -> None:
+    config_path = _write_config(tmp_path, enabled=True)
+    _write_destination(
+        tmp_path,
+        enabled=True,
+        endpoint_env="ANOTHER_NOTIFICATION_URL",
+    )
+    with pytest.raises(ValidationError, match="does not match"):
+        deliver_portfolio_risk_notifications(
+            config_path=config_path,
+            dsn="dsn",
+            execute=True,
+            environment={
+                "RISK_NOTIFICATION_WEBHOOK_URL": "https://alerts.example.test/risk"
+            },
+            reader=lambda **_: [_candidate()],
+            attempt_writer=lambda _: None,
+            transport=lambda *_: 204,
+            lock_factory=_delivery_lock,
+            clock=lambda: datetime(2026, 6, 1, tzinfo=timezone.utc),
+        )
+
+
+def test_unapproved_event_type_rejects_before_first_request(tmp_path: Path) -> None:
+    config_path = _write_config(tmp_path, enabled=True)
+    sends: list[bool] = []
+    with pytest.raises(ValidationError, match="does not allow"):
+        deliver_portfolio_risk_notifications(
+            config_path=config_path,
+            dsn="dsn",
+            execute=True,
+            environment={
+                "RISK_NOTIFICATION_WEBHOOK_URL": "https://alerts.example.test/risk"
+            },
+            reader=lambda **_: [_candidate(event_type="breach_deescalated")],
+            attempt_writer=lambda _: None,
+            transport=lambda *_: sends.append(True) or 204,
+            lock_factory=_delivery_lock,
+            clock=lambda: datetime(2026, 6, 1, tzinfo=timezone.utc),
+        )
+    assert sends == []
+
+
 def test_initial_delivery_failure_records_one_attempt_without_hidden_retry(
     tmp_path: Path,
 ) -> None:
@@ -206,6 +354,7 @@ def test_initial_delivery_failure_records_one_attempt_without_hidden_retry(
         attempt_writer=lambda attempt: attempts.append(dict(attempt)),
         transport=transport,
         lock_factory=_delivery_lock,
+        clock=lambda: datetime(2026, 6, 1, tzinfo=timezone.utc),
     )
 
     assert len(calls) == 1
@@ -232,7 +381,13 @@ def test_initial_delivery_failure_records_one_attempt_without_hidden_retry(
         "scope": LOCK_SCOPE,
         "key_fingerprint": LOCK_KEY_FINGERPRINT,
     }
-    assert "https://alerts.example.test/risk" not in json.dumps(summary)
+    authority = summary["destination_authority"]
+    assert authority["active"] is True
+    assert authority["destination_id"] == "risk-operations-webhook"
+    assert authority["evaluated_event_types"] == ["breach_opened"]
+    assert authority["endpoint_value_recorded"] is False
+    rendered = json.dumps(summary)
+    assert "https://alerts.example.test/risk" not in rendered
     assert summary["endpoint"]["host"] == "alerts.example.test"
 
 
