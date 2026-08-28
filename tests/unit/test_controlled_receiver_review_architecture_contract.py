@@ -11,8 +11,10 @@ def test_controlled_receiver_review_views_are_current_read_only_and_reconciled()
     fixture = Path(
         "src/warehouse/controlled_receiver_review_postgres_contract_check.py"
     ).read_text(encoding="utf-8")
+    parent_fixture = Path(
+        "src/warehouse/controlled_receiver_rehearsal_postgres_contract_check.py"
+    ).read_text(encoding="utf-8")
     compose = Path("docker-compose.yml").read_text(encoding="utf-8")
-    makefile = Path("Makefile").read_text(encoding="utf-8")
     docs = Path(
         "docs/controlled-notification-receiver-review-views.md"
     ).read_text(encoding="utf-8")
@@ -77,7 +79,8 @@ def test_controlled_receiver_review_views_are_current_read_only_and_reconciled()
         assert required in fixture
 
     assert "23_controlled_notification_receiver_review_schema.sql:ro" in compose
-    assert "controlled_receiver_review_postgres_contract_check" in makefile
+    assert "run_review_contract_check" in parent_fixture
+    assert '"activation_review": review_summary' in parent_fixture
 
     for required in (
         "primary arc42 block: `warehouse`",
