@@ -41,8 +41,20 @@ def test_controlled_receiver_review_views_are_current_read_only_and_reconciled()
         "ready",
     ):
         assert status in schema
-        assert status in fixture
+        assert status in checks
         assert status in docs
+
+    for exercised_status in (
+        "checklist_incomplete",
+        "checklist_not_yet_active",
+        "checklist_expired",
+        "rehearsal_missing",
+        "rehearsal_superseded",
+        "rehearsal_rejected",
+        "rehearsal_failed",
+        "ready",
+    ):
+        assert exercised_status in fixture
 
     for required in (
         "reviewed_at DESC, checklist.checklist_id DESC",
