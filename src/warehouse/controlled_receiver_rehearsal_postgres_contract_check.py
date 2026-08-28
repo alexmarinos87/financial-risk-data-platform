@@ -162,7 +162,9 @@ def _mutation_rejected(dsn: str, statement: str) -> bool:
             with connection.cursor() as cursor:
                 cursor.execute(statement)
             connection.commit()
-    except Exception:
+    except Exception as exc:
+        if "append-only" not in str(exc):
+            raise
         return True
     return False
 
