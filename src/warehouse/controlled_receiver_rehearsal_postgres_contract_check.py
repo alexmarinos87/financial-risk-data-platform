@@ -22,6 +22,9 @@ from src.warehouse.controlled_receiver_rehearsal_contract import (
 from src.warehouse.controlled_receiver_rehearsal_recorder import (
     record_controlled_receiver_rehearsal,
 )
+from src.warehouse.controlled_receiver_review_postgres_contract_check import (
+    run_contract_check as run_review_contract_check,
+)
 from src.warehouse.postgres_loader import DEFAULT_POSTGRES_DSN
 
 CHECK_PATH = Path(
@@ -239,6 +242,7 @@ def run_contract_check(dsn: str) -> dict[str, Any]:
         names = ", ".join(str(check[0]) for check in failures)
         raise AssertionError("controlled receiver reconciliation failed: " + names)
 
+    review_summary = run_review_contract_check(dsn)
     return {
         "model_version": "portfolio-risk-controlled-receiver-contract-v1",
         "terminal_records": len(created),
@@ -251,6 +255,7 @@ def run_contract_check(dsn: str) -> dict[str, Any]:
         "update_rejected": update_rejected,
         "delete_rejected": delete_rejected,
         "consistency_checks": len(checks),
+        "activation_review": review_summary,
         "external_request_performed": False,
         "payload_bodies_recorded": False,
         "response_bodies_recorded": False,
@@ -260,8 +265,8 @@ def run_contract_check(dsn: str) -> dict[str, Any]:
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Exercise append-only controlled receiver rehearsal history "
-            "against PostgreSQL 16."
+            "Exercise append-only controlled receiver rehearsal history and "
+            "current review views against PostgreSQL 16."
         )
     )
     parser.add_argument(
