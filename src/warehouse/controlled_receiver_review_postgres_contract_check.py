@@ -367,7 +367,8 @@ def _assert_review_states(dsn: str) -> tuple[dict[str, str], int]:
                 WHERE destination_id LIKE 'review-%'
                 """
             )
-            if cursor.fetchone()[0] != 7:
+            failure_row = cursor.fetchone()
+            if failure_row is None or failure_row[0] != 7:
                 raise AssertionError("activation review failure partition changed")
             cursor.execute(
                 """
@@ -376,7 +377,8 @@ def _assert_review_states(dsn: str) -> tuple[dict[str, str], int]:
                 WHERE destination_id LIKE 'review-%'
                 """
             )
-            if cursor.fetchone()[0] != 1:
+            ready_row = cursor.fetchone()
+            if ready_row is None or ready_row[0] != 1:
                 raise AssertionError("activation-ready partition changed")
             cursor.execute(CHECK_PATH.read_text(encoding="utf-8"))
             checks = list(cursor.fetchall())
