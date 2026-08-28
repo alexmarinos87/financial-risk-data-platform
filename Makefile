@@ -265,6 +265,8 @@ postgres-contract-check:
 		--check sql/portfolio_risk_limits_consistency_checks.sql
 	$(PYTHON) -m src.warehouse.notification_retry_follow_up_postgres_contract_check \
 		--dsn "$(LOCAL_POSTGRES_DSN)"
+	$(PYTHON) -m src.warehouse.controlled_receiver_rehearsal_postgres_contract_check \
+		--dsn "$(LOCAL_POSTGRES_DSN)"
 
 local-db-up:
 	docker compose up -d postgres mongo
