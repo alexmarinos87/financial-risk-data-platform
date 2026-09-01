@@ -90,12 +90,17 @@ def _payload(
 
 
 def _write(tmp_path: Path, name: str, payload: dict[str, Any]) -> Path:
+    tmp_path.mkdir(parents=True, exist_ok=True)
     path = tmp_path / name
     path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
     return path
 
 
-def _evidence(tmp_path: Path, *, wrong_rollback_parent: bool = False) -> dict[str, Any]:
+def _evidence(
+    tmp_path: Path,
+    *,
+    wrong_rollback_parent: bool = False,
+) -> dict[str, Any]:
     baseline = _write(
         tmp_path,
         "baseline.yaml",
@@ -265,6 +270,19 @@ def _run(tmp_path: Path) -> dict[str, Any]:
     )
 
 
+def _single_requests() -> tuple[dict[str, Any], dict[str, Any]]:
+    return (
+        _request(
+            endpoint="https://receiver-v2.test/risk",
+            event_id="event-1",
+        ),
+        _request(
+            endpoint="https://receiver-v1.test/risk",
+            event_id="event-2",
+        ),
+    )
+
+
 def test_complete_transition_rehearsal_is_deterministic_and_no_network(
     tmp_path: Path,
 ) -> None:
@@ -308,22 +326,14 @@ def test_complete_transition_rehearsal_is_deterministic_and_no_network(
 
 def test_rehearsal_rejects_broken_plan_chain(tmp_path: Path) -> None:
     evidence = _evidence(tmp_path, wrong_rollback_parent=True)
-    request = _request(
-        endpoint="https://receiver-v2.test/risk",
-        event_id="event-1",
-    )
+    rotate_request, rollback_request = _single_requests()
     with pytest.raises(ValidationError, match="exact disablement plan"):
         rehearse_notification_destination_transition(
             **evidence,
             rotate_allowed_hosts=["receiver-v2.test"],
             rollback_allowed_hosts=["receiver-v1.test"],
-            rotate_requests=[request],
-            rollback_requests=[
-                _request(
-                    endpoint="https://receiver-v1.test/risk",
-                    event_id="event-2",
-                )
-            ],
+            rotate_requests=[rotate_request],
+            rollback_requests=[rollback_request],
             started_at=STARTED_AT,
             clock=_clock(
                 STARTED_AT + timedelta(seconds=1),
@@ -335,23 +345,14 @@ def test_rehearsal_rejects_broken_plan_chain(tmp_path: Path) -> None:
 def test_rehearsal_rejects_wrong_current_authority(tmp_path: Path) -> None:
     evidence = _evidence(tmp_path)
     evidence["baseline_authority"] = evidence["rotate_authority"]
+    rotate_request, rollback_request = _single_requests()
     with pytest.raises(ValidationError, match="current plan evidence"):
         rehearse_notification_destination_transition(
             **evidence,
             rotate_allowed_hosts=["receiver-v2.test"],
             rollback_allowed_hosts=["receiver-v1.test"],
-            rotate_requests=[
-                _request(
-                    endpoint="https://receiver-v2.test/risk",
-                    event_id="event-1",
-                )
-            ],
-            rollback_requests=[
-                _request(
-                    endpoint="https://receiver-v1.test/risk",
-                    event_id="event-2",
-                )
-            ],
+            rotate_requests=[rotate_request],
+            rollback_requests=[rollback_request],
             started_at=STARTED_AT,
             clock=_clock(
                 STARTED_AT + timedelta(seconds=1),
@@ -363,23 +364,14 @@ def test_rehearsal_rejects_wrong_current_authority(tmp_path: Path) -> None:
 def test_rehearsal_rejects_mismatched_checklist(tmp_path: Path) -> None:
     evidence = _evidence(tmp_path)
     evidence["rollback_checklist"] = evidence["rotate_checklist"]
+    rotate_request, rollback_request = _single_requests()
     with pytest.raises(ValidationError, match="does not match authority"):
         rehearse_notification_destination_transition(
             **evidence,
             rotate_allowed_hosts=["receiver-v2.test"],
             rollback_allowed_hosts=["receiver-v1.test"],
-            rotate_requests=[
-                _request(
-                    endpoint="https://receiver-v2.test/risk",
-                    event_id="event-1",
-                )
-            ],
-            rollback_requests=[
-                _request(
-                    endpoint="https://receiver-v1.test/risk",
-                    event_id="event-2",
-                )
-            ],
+            rotate_requests=[rotate_request],
+            rollback_requests=[rollback_request],
             started_at=STARTED_AT,
             clock=_clock(
                 STARTED_AT + timedelta(seconds=1),
@@ -390,18 +382,14 @@ def test_rehearsal_rejects_mismatched_checklist(tmp_path: Path) -> None:
 
 def test_rehearsal_requires_requests_only_for_active_stages(tmp_path: Path) -> None:
     evidence = _evidence(tmp_path)
+    _, rollback_request = _single_requests()
     with pytest.raises(ValidationError, match="between 1 and"):
         rehearse_notification_destination_transition(
             **evidence,
             rotate_allowed_hosts=["receiver-v2.test"],
             rollback_allowed_hosts=["receiver-v1.test"],
             rotate_requests=[],
-            rollback_requests=[
-                _request(
-                    endpoint="https://receiver-v1.test/risk",
-                    event_id="event-2",
-                )
-            ],
+            rollback_requests=[rollback_request],
             started_at=STARTED_AT,
             clock=_clock(STARTED_AT + timedelta(seconds=1)),
         )
@@ -411,21 +399,14 @@ def test_rehearsal_rejects_receipts_before_start_or_out_of_order(
     tmp_path: Path,
 ) -> None:
     evidence = _evidence(tmp_path)
-    request_one = _request(
-        endpoint="https://receiver-v2.test/risk",
-        event_id="event-1",
-    )
-    request_two = _request(
-        endpoint="https://receiver-v1.test/risk",
-        event_id="event-2",
-    )
+    rotate_request, rollback_request = _single_requests()
     with pytest.raises(ValidationError, match="precedes rehearsal start"):
         rehearse_notification_destination_transition(
             **evidence,
             rotate_allowed_hosts=["receiver-v2.test"],
             rollback_allowed_hosts=["receiver-v1.test"],
-            rotate_requests=[request_one],
-            rollback_requests=[request_two],
+            rotate_requests=[rotate_request],
+            rollback_requests=[rollback_request],
             started_at=STARTED_AT,
             clock=_clock(
                 STARTED_AT - timedelta(seconds=1),
@@ -438,8 +419,8 @@ def test_rehearsal_rejects_receipts_before_start_or_out_of_order(
             **evidence,
             rotate_allowed_hosts=["receiver-v2.test"],
             rollback_allowed_hosts=["receiver-v1.test"],
-            rotate_requests=[request_one],
-            rollback_requests=[request_two],
+            rotate_requests=[rotate_request],
+            rollback_requests=[rollback_request],
             started_at=STARTED_AT,
             clock=_clock(
                 STARTED_AT + timedelta(seconds=2),
