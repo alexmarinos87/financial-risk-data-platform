@@ -159,10 +159,10 @@ def _validate_transition_semantics(
     else:
         if current_status != "disabled" or target_status != "active":
             raise ValidationError("rollback requires disabled current and active target")
-        if not endpoint_changed:
-            raise ValidationError("rollback requires the prior endpoint environment identity")
         if prior_plan_id is None:
             raise ValidationError("rollback requires prior_plan_id")
+        if not endpoint_changed:
+            raise ValidationError("rollback requires the prior endpoint environment identity")
 
 
 def build_notification_destination_transition_plan(
