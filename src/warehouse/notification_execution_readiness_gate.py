@@ -631,10 +631,11 @@ def _canonical_ambiguity_summary(value: Any) -> dict[str, Any]:
         values = summary[key]
         if not isinstance(values, list):
             raise ValidationError(f"{key} must be an array")
-        parsed = [_safe_text(item, f"{key} item") for item in values]
+        parsed_optional = [_safe_text(item, f"{key} item") for item in values]
+        parsed = [item for item in parsed_optional if item is not None]
         if parsed != sorted(set(parsed)):
             raise ValidationError(f"{key} must be sorted with no duplicates")
-        parsed_lists[key] = [item for item in parsed if item is not None]
+        parsed_lists[key] = parsed
     if count != len(parsed_lists["event_ids"]) or count != len(
         parsed_lists["record_ids"]
     ):
