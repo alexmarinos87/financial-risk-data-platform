@@ -28,6 +28,9 @@ from src.warehouse.controlled_receiver_review_postgres_contract_check import (
 from src.warehouse.notification_destination_transition_rehearsal_postgres_contract_check import (
     run_contract_check as run_transition_contract_check,
 )
+from src.warehouse.notification_execution_readiness_postgres_contract_check import (
+    run_contract_check as run_readiness_history_contract_check,
+)
 from src.warehouse.postgres_loader import DEFAULT_POSTGRES_DSN
 
 CHECK_PATH = Path(
@@ -246,6 +249,7 @@ def run_contract_check(dsn: str) -> dict[str, Any]:
         raise AssertionError("controlled receiver reconciliation failed: " + names)
 
     review_summary = run_review_contract_check(dsn)
+    readiness_history_summary = run_readiness_history_contract_check(dsn)
     transition_summary = run_transition_contract_check(dsn)
     return {
         "model_version": "portfolio-risk-controlled-receiver-contract-v1",
@@ -260,6 +264,7 @@ def run_contract_check(dsn: str) -> dict[str, Any]:
         "delete_rejected": delete_rejected,
         "consistency_checks": len(checks),
         "activation_review": review_summary,
+        "notification_execution_readiness": readiness_history_summary,
         "destination_transition": transition_summary,
         "external_request_performed": False,
         "payload_bodies_recorded": False,
@@ -270,8 +275,9 @@ def run_contract_check(dsn: str) -> dict[str, Any]:
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Exercise append-only controlled receiver, activation review, and "
-            "destination transition history against PostgreSQL 16."
+            "Exercise append-only controlled receiver, activation review, "
+            "notification readiness, and destination transition history against "
+            "PostgreSQL 16."
         )
     )
     parser.add_argument(
