@@ -32,6 +32,7 @@ services:
       - ./sql/portfolio_risk_notification_retry_destination_follow_up_schema.sql:/docker-entrypoint-initdb.d/21_portfolio_risk_notification_retry_destination_follow_up_schema.sql:ro
       - ./sql/controlled_notification_receiver_rehearsal_schema.sql:/docker-entrypoint-initdb.d/22_controlled_notification_receiver_rehearsal_schema.sql:ro
       - ./sql/controlled_notification_receiver_review_schema.sql:/docker-entrypoint-initdb.d/23_controlled_notification_receiver_review_schema.sql:ro
+      - ./sql/notification_destination_transition_rehearsal_schema.sql:/docker-entrypoint-initdb.d/24_notification_destination_transition_rehearsal_schema.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U risk_user -d risk_platform"]
       interval: 5s
