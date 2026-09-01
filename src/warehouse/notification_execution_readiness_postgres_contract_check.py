@@ -163,10 +163,11 @@ def _mutation_rejected(dsn: str, statement: str) -> bool:
 
 def run_contract_check(dsn: str) -> dict[str, Any]:
     now = datetime.now(timezone.utc).replace(microsecond=0)
-    rehearsal, rollback_checklist = _transition_evidence(now)
+    transition_time = now - timedelta(minutes=30)
+    rehearsal, rollback_checklist = _transition_evidence(transition_time)
     transition_record = build_notification_destination_transition_rehearsal_record(
         request_id="READINESS-HISTORY-TRANSITION-001",
-        recorded_at=now - timedelta(hours=2, minutes=59, seconds=56),
+        recorded_at=transition_time - timedelta(hours=2, minutes=59, seconds=56),
         rehearsal=rehearsal,
     )
     rollback_receiver = _controlled_receiver_record(
@@ -182,7 +183,7 @@ def run_contract_check(dsn: str) -> dict[str, Any]:
         record=transition_record,
     )
 
-    destination = _destination(now)
+    destination = _destination(transition_time)
     if destination.fingerprint != rollback_checklist["destination_fingerprint"]:
         raise AssertionError("readiness destination fingerprint does not match transition")
     evidence = _evidence(dsn)
