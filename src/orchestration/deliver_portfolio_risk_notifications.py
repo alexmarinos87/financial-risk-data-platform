@@ -143,6 +143,44 @@ def load_webhook_delivery_config(path: Path) -> WebhookDeliveryConfig:
     return parse_webhook_delivery_config(payload)
 
 
+def _enforce_initial_delivery_readiness(
+    *,
+    dsn: str,
+    destination_id: str,
+    evaluated_at: datetime,
+    delivery_config_path: Path,
+    destination_config_path: Path,
+    lock_evidence: Mapping[str, Any],
+) -> dict[str, Any]:
+    # Local import avoids a module cycle: the gate reuses WebhookDeliveryConfig.
+    from src.warehouse.notification_execution_readiness_enforcement import (
+        enforce_notification_execution_readiness,
+    )
+
+    return enforce_notification_execution_readiness(
+        dsn=dsn,
+        destination_id=destination_id,
+        execution_kind="initial",
+        evaluated_at=evaluated_at,
+        delivery_config_path=delivery_config_path,
+        destination_config_path=destination_config_path,
+        lock_evidence=lock_evidence,
+    )
+
+
+def _validate_initial_delivery_readiness(
+    value: Mapping[str, Any],
+) -> dict[str, Any]:
+    from src.warehouse.notification_execution_readiness_enforcement import (
+        validate_notification_execution_readiness_enforcement,
+    )
+
+    validated = validate_notification_execution_readiness_enforcement(value)
+    if validated["execution_kind"] != "initial":
+        raise ValidationError("initial delivery requires initial readiness evidence")
+    return validated
+
+
 def _endpoint(value: str) -> tuple[str, str]:
     endpoint = _required_text(value, "webhook endpoint", maximum=2_048)
     parsed = urlparse(endpoint)
@@ -382,6 +420,7 @@ def _delivery_summary(
     execute: bool,
     destination_authority: Mapping[str, Any],
     lock_evidence: Mapping[str, Any] | None = None,
+    execution_readiness: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     plan = [
         {
@@ -406,7 +445,7 @@ def _delivery_summary(
             lock_evidence.get("key_fingerprint") if lock_evidence is not None else None
         ),
     }
-    return {
+    summary = {
         "run_id": str(uuid4()),
         "config_fingerprint": config.fingerprint,
         "channel": CHANNEL,
@@ -432,6 +471,9 @@ def _delivery_summary(
         "concurrency_control": concurrency_control,
         "response_bodies_recorded": False,
     }
+    if execution_readiness is not None:
+        summary["execution_readiness"] = dict(execution_readiness)
+    return summary
 
 
 def _execute_initial_attempts(
@@ -593,13 +635,24 @@ def deliver_portfolio_risk_notifications(
             dsn=dsn,
             max_events=config.max_batch_events,
         )
+        execution_time = selected_clock()
         destination_authority = resolve_notification_destination_authority(
             destination_config_path=selected_destination_path,
             destination_id=destination_id,
             delivery_endpoint_env=config.endpoint_env,
-            evaluated_at=selected_clock(),
+            evaluated_at=execution_time,
             event_types=_event_types(candidates),
             require_active=True,
+        )
+        execution_readiness = _validate_initial_delivery_readiness(
+            _enforce_initial_delivery_readiness(
+                dsn=dsn,
+                destination_id=destination_id,
+                evaluated_at=execution_time,
+                delivery_config_path=config_path,
+                destination_config_path=selected_destination_path,
+                lock_evidence=lock_evidence,
+            )
         )
         summary = _delivery_summary(
             config=config,
@@ -608,6 +661,7 @@ def deliver_portfolio_risk_notifications(
             execute=True,
             destination_authority=destination_authority,
             lock_evidence=lock_evidence,
+            execution_readiness=execution_readiness,
         )
         summary["execution"] = _execute_initial_attempts(
             candidates=candidates,
@@ -692,15 +746,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
     except ValidationError:
         print(
-            "Webhook delivery failed: configuration, destination, endpoint, "
-            "candidate, or options were invalid",
+            "Webhook delivery failed: configuration, destination, readiness, "
+            "endpoint, candidate, or options were invalid",
             file=sys.stderr,
         )
         return 1
     except StorageError:
         print(
-            "Webhook delivery failed: PostgreSQL, lock, or attempt persistence "
-            "failed; remote receivers should deduplicate by Idempotency-Key",
+            "Webhook delivery failed: PostgreSQL, lock, readiness, or attempt "
+            "persistence failed; remote receivers should deduplicate by "
+            "Idempotency-Key",
             file=sys.stderr,
         )
         return 1
