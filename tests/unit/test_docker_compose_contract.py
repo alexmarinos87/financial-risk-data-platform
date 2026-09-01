@@ -50,6 +50,7 @@ def test_local_database_seed_mounts_are_read_only_and_ordered() -> None:
         "./sql/controlled_notification_receiver_rehearsal_schema.sql:/docker-entrypoint-initdb.d/22_controlled_notification_receiver_rehearsal_schema.sql:ro",
         "./sql/controlled_notification_receiver_review_schema.sql:/docker-entrypoint-initdb.d/23_controlled_notification_receiver_review_schema.sql:ro",
         "./sql/notification_destination_transition_rehearsal_schema.sql:/docker-entrypoint-initdb.d/24_notification_destination_transition_rehearsal_schema.sql:ro",
+        "./sql/notification_execution_readiness_schema.sql:/docker-entrypoint-initdb.d/25_notification_execution_readiness_schema.sql:ro",
     ]
     assert services["mongo"]["volumes"] == [
         "./mongo/init:/docker-entrypoint-initdb.d:ro"
