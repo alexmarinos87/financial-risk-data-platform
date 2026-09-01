@@ -4,13 +4,25 @@ import argparse
 import json
 import os
 import sys
+import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from src.common.exceptions import ValidationError
 from src.orchestration.deliver_portfolio_risk_notifications import (
     WebhookDeliveryConfig,
+)
+from src.orchestration.notification_destination_transition_plan import (
+    build_notification_destination_transition_plan,
+)
+from src.orchestration.notification_destination_transition_rehearsal import (
+    rehearse_notification_destination_transition,
+)
+from src.orchestration.portfolio_risk_notification_destination_authority import (
+    resolve_notification_destination_authority,
 )
 from src.orchestration.portfolio_risk_notification_destination_contract import (
     DestinationActivation,
@@ -27,11 +39,12 @@ from src.warehouse.notification_destination_transition_rehearsal_contract import
     build_notification_destination_transition_rehearsal_record,
 )
 from src.warehouse.notification_destination_transition_rehearsal_postgres_contract_check import (
-    DESTINATION_ID,
+    NEW_ENDPOINT_ENV,
     OLD_ENDPOINT_ENV,
     _checklist,
+    _clock,
     _controlled_receiver_record,
-    _transition_evidence,
+    _request,
 )
 from src.warehouse.notification_destination_transition_rehearsal_recorder import (
     record_notification_destination_transition_rehearsal,
@@ -49,6 +62,219 @@ from src.warehouse.notification_execution_readiness_recorder import (
 from src.warehouse.postgres_loader import DEFAULT_POSTGRES_DSN
 
 CHECK_PATH = Path("sql/notification_execution_readiness_consistency_checks.sql")
+DESTINATION_ID = "readiness-history-webhook"
+
+
+def _iso(value: datetime) -> str:
+    return value.astimezone(timezone.utc).isoformat()
+
+
+def _activation(
+    *,
+    enabled: bool,
+    change_request_id: str,
+    reviewed_at: datetime,
+    expires_at: datetime,
+) -> dict[str, Any]:
+    if not enabled:
+        return {
+            "enabled": False,
+            "change_request_id": None,
+            "reviewed_by": [],
+            "reviewed_at": None,
+            "review_expires_at": None,
+        }
+    return {
+        "enabled": True,
+        "change_request_id": change_request_id,
+        "reviewed_by": ["readiness-history-reviewer"],
+        "reviewed_at": _iso(reviewed_at),
+        "review_expires_at": _iso(expires_at),
+    }
+
+
+def _destination_config(
+    *,
+    endpoint_env: str,
+    enabled: bool,
+    change_request_id: str,
+    reviewed_at: datetime,
+    expires_at: datetime,
+) -> dict[str, Any]:
+    return {
+        "model_version": "portfolio-risk-notification-destination-v1",
+        "destinations": {
+            DESTINATION_ID: {
+                "channel": "webhook",
+                "endpoint_env": endpoint_env,
+                "owner": {
+                    "team": "risk-operations",
+                    "contact": "risk-operations-oncall",
+                },
+                "purpose": "portfolio-risk-breach-lifecycle",
+                "recipient_scope": "risk-operations",
+                "data_classification": "internal",
+                "allowed_event_types": [
+                    "breach_escalated",
+                    "breach_opened",
+                    "breach_resolved",
+                ],
+                "activation": _activation(
+                    enabled=enabled,
+                    change_request_id=change_request_id,
+                    reviewed_at=reviewed_at,
+                    expires_at=expires_at,
+                ),
+            }
+        },
+    }
+
+
+def _write_config(root: Path, name: str, value: dict[str, Any]) -> Path:
+    path = root / name
+    path.write_text(yaml.safe_dump(value, sort_keys=False), encoding="utf-8")
+    return path
+
+
+def _transition_evidence(now: datetime) -> tuple[dict[str, Any], dict[str, Any]]:
+    planned_at = now - timedelta(hours=4)
+    started_at = now - timedelta(hours=3)
+    expires_at = now + timedelta(days=30)
+    with tempfile.TemporaryDirectory(
+        prefix="readiness-history-transition-"
+    ) as directory:
+        root = Path(directory)
+        baseline_path = _write_config(
+            root,
+            "baseline.yaml",
+            _destination_config(
+                endpoint_env=OLD_ENDPOINT_ENV,
+                enabled=True,
+                change_request_id="CHG-READINESS-BASELINE",
+                reviewed_at=planned_at - timedelta(days=30),
+                expires_at=expires_at,
+            ),
+        )
+        rotated_path = _write_config(
+            root,
+            "rotated.yaml",
+            _destination_config(
+                endpoint_env=NEW_ENDPOINT_ENV,
+                enabled=True,
+                change_request_id="CHG-READINESS-ROTATE",
+                reviewed_at=planned_at - timedelta(days=10),
+                expires_at=expires_at,
+            ),
+        )
+        disabled_path = _write_config(
+            root,
+            "disabled.yaml",
+            _destination_config(
+                endpoint_env=NEW_ENDPOINT_ENV,
+                enabled=False,
+                change_request_id="unused",
+                reviewed_at=planned_at,
+                expires_at=expires_at,
+            ),
+        )
+        rollback_path = _write_config(
+            root,
+            "rollback.yaml",
+            _destination_config(
+                endpoint_env=OLD_ENDPOINT_ENV,
+                enabled=True,
+                change_request_id="CHG-READINESS-ROLLBACK",
+                reviewed_at=planned_at - timedelta(days=1),
+                expires_at=expires_at,
+            ),
+        )
+        rotate_plan = build_notification_destination_transition_plan(
+            operation="rotate",
+            current_config_path=baseline_path,
+            target_config_path=rotated_path,
+            destination_id=DESTINATION_ID,
+            planned_at=planned_at,
+        )
+        disable_plan = build_notification_destination_transition_plan(
+            operation="disable",
+            current_config_path=rotated_path,
+            target_config_path=disabled_path,
+            destination_id=DESTINATION_ID,
+            planned_at=planned_at,
+        )
+        rollback_plan = build_notification_destination_transition_plan(
+            operation="rollback",
+            current_config_path=disabled_path,
+            target_config_path=rollback_path,
+            destination_id=DESTINATION_ID,
+            planned_at=planned_at,
+            prior_plan_id=disable_plan["plan_id"],
+        )
+        baseline_authority = resolve_notification_destination_authority(
+            destination_config_path=baseline_path,
+            destination_id=DESTINATION_ID,
+            delivery_endpoint_env=OLD_ENDPOINT_ENV,
+            evaluated_at=planned_at,
+            event_types=["breach_opened"],
+        )
+        rotate_authority = resolve_notification_destination_authority(
+            destination_config_path=rotated_path,
+            destination_id=DESTINATION_ID,
+            delivery_endpoint_env=NEW_ENDPOINT_ENV,
+            evaluated_at=planned_at,
+            event_types=["breach_opened"],
+        )
+        rollback_authority = resolve_notification_destination_authority(
+            destination_config_path=rollback_path,
+            destination_id=DESTINATION_ID,
+            delivery_endpoint_env=OLD_ENDPOINT_ENV,
+            evaluated_at=planned_at,
+            event_types=["breach_opened"],
+        )
+
+    rotate_checklist = _checklist(
+        destination_id=DESTINATION_ID,
+        fingerprint=rotate_authority["destination_fingerprint"],
+        authority_id=rotate_authority["authority_id"],
+        reviewed_at=planned_at - timedelta(hours=2),
+        expires_at=expires_at,
+    )
+    rollback_checklist = _checklist(
+        destination_id=DESTINATION_ID,
+        fingerprint=rollback_authority["destination_fingerprint"],
+        authority_id=rollback_authority["authority_id"],
+        reviewed_at=planned_at - timedelta(hours=1),
+        expires_at=expires_at,
+    )
+    rotate_request = _request(
+        "https://readiness-receiver-v2.test/controlled",
+        "readiness-history-transition-rotate",
+    )
+    rollback_request = _request(
+        "https://readiness-receiver-v1.test/controlled",
+        "readiness-history-transition-rollback",
+    )
+    rehearsal = rehearse_notification_destination_transition(
+        rotate_plan=rotate_plan,
+        disable_plan=disable_plan,
+        rollback_plan=rollback_plan,
+        baseline_authority=baseline_authority,
+        rotate_authority=rotate_authority,
+        rollback_authority=rollback_authority,
+        rotate_checklist=rotate_checklist,
+        rollback_checklist=rollback_checklist,
+        rotate_allowed_hosts=["readiness-receiver-v2.test"],
+        rollback_allowed_hosts=["readiness-receiver-v1.test"],
+        rotate_requests=[rotate_request, rotate_request],
+        rollback_requests=[rollback_request],
+        started_at=started_at,
+        clock=_clock(
+            started_at + timedelta(seconds=1),
+            started_at + timedelta(seconds=2),
+            started_at + timedelta(seconds=3),
+        ),
+    )
+    return rehearsal, rollback_checklist
 
 
 def _destination(now: datetime) -> NotificationDestination:
@@ -71,8 +297,8 @@ def _destination(now: datetime) -> NotificationDestination:
         ),
         activation=DestinationActivation(
             enabled=True,
-            change_request_id="CHG-CONTRACT-ROLLBACK",
-            reviewed_by=("transition-contract-reviewer",),
+            change_request_id="CHG-READINESS-ROLLBACK",
+            reviewed_by=("readiness-history-reviewer",),
             reviewed_at=planned_at - timedelta(days=1),
             review_expires_at=now + timedelta(days=30),
         ),
@@ -92,7 +318,6 @@ def _evidence(dsn: str) -> dict[str, Any]:
 
 def _decision(
     *,
-    now: datetime,
     evaluated_at: datetime,
     execution_kind: str,
     retry_enabled: bool,
@@ -192,7 +417,6 @@ def run_contract_check(dsn: str) -> dict[str, Any]:
         raise AssertionError("readiness fixture transition did not become ready")
 
     stale_decision = _decision(
-        now=now,
         evaluated_at=now - timedelta(minutes=10),
         execution_kind="initial",
         retry_enabled=True,
@@ -209,7 +433,6 @@ def run_contract_check(dsn: str) -> dict[str, Any]:
         raise AssertionError("old current readiness decision was not stale")
 
     current_decision = _decision(
-        now=now,
         evaluated_at=now - timedelta(minutes=1),
         execution_kind="initial",
         retry_enabled=True,
@@ -231,7 +454,6 @@ def run_contract_check(dsn: str) -> dict[str, Any]:
         raise AssertionError("current initial readiness decision was not allowed")
 
     retry_decision = _decision(
-        now=now,
         evaluated_at=now - timedelta(seconds=30),
         execution_kind="retry",
         retry_enabled=False,
@@ -322,6 +544,7 @@ def run_contract_check(dsn: str) -> dict[str, Any]:
 
     return {
         "model_version": "portfolio-risk-notification-readiness-history-contract-v1",
+        "destination_id": DESTINATION_ID,
         "current_initial_decision_id": current_decision["decision_id"],
         "current_retry_decision_id": retry_decision["decision_id"],
         "stale_status_proved": True,
