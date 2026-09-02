@@ -54,3 +54,54 @@ def _retry_destination_authority_unit_test_seam(
         }
 
     monkeypatch.setattr(target, "resolve_notification_destination_authority", resolver)
+
+
+@pytest.fixture(autouse=True)
+def _initial_delivery_readiness_unit_test_seam(
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+) -> None:
+    """Keep legacy sender tests focused on transport and attempt semantics."""
+
+    module = getattr(request.node, "module", None)
+    if module is None or not module.__name__.endswith(
+        "test_portfolio_risk_webhook_delivery"
+    ):
+        return
+
+    from src.orchestration import deliver_portfolio_risk_notifications as target
+
+    evidence = {
+        "model_version": (
+            "portfolio-risk-notification-execution-readiness-enforcement-v1"
+        ),
+        "enforcement_id": "readiness-enforcement-test",
+        "destination_id": "risk-operations-webhook",
+        "execution_kind": "initial",
+        "enforced_at": "2026-06-01T00:00:00+00:00",
+        "lock": {
+            "key_fingerprint": "readiness-lock-test",
+            "model_version": "portfolio-risk-notification-delivery-lock-v1",
+            "scope": "portfolio-risk-notification-delivery",
+        },
+        "readiness_record_id": "readiness-record-test",
+        "readiness_request_id": "readiness-request-test",
+        "retained_decision_id": "retained-decision-test",
+        "refreshed_decision_id": "refreshed-decision-test",
+        "execution_ready": True,
+        "readiness_review_status": "allowed",
+        "retained_decision_evaluated_at": "2026-06-01T00:00:00+00:00",
+        "refreshed_decision_evaluated_at": "2026-06-01T00:00:00+00:00",
+        "substantive_evidence_match": True,
+    }
+
+    monkeypatch.setattr(
+        target,
+        "_enforce_initial_delivery_readiness",
+        lambda **_: dict(evidence),
+    )
+    monkeypatch.setattr(
+        target,
+        "_validate_initial_delivery_readiness",
+        lambda value: dict(value),
+    )
