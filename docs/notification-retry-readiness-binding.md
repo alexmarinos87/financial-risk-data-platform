@@ -92,8 +92,9 @@ persist it. A following PR can add append-only PostgreSQL history, exact replay
 convergence, foreign-key reconciliation, and integration with the recorded
 retry operator path without changing this identity contract.
 
-The binding retains no endpoint value, complete URL, environment value,
-credential, payload body, response body, arbitrary exception text, or database
-DSN. The builder performs no database operation, DNS lookup, socket operation,
-network request, delivery attempt, acknowledgement, outbox mutation, provider
-request, deployment, or `terraform apply`.
+There is no network request in this binding increment. The binding retains no
+endpoint value, complete URL, environment value, credential, payload body,
+response body, arbitrary exception text, or database DSN. The builder performs
+no database operation, DNS lookup, socket operation, delivery attempt,
+acknowledgement, outbox mutation, provider request, deployment, or
+`terraform apply`.
