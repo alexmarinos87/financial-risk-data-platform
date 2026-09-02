@@ -41,7 +41,7 @@ Failure to enter that held-lock context exactly once is rejected.
 
 ## Fail-closed evidence
 
-Execution is rejected before transport when:
+Execution is rejected before the first request when:
 
 - `--execute` is absent;
 - the retained plan confirmation differs;
