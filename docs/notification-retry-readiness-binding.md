@@ -5,8 +5,9 @@ Primary arc42 blocks: `orchestration` and `warehouse`.
 ## Goal
 
 This increment defines the deterministic evidence contract that links one exact
-retry terminal record to the exact readiness enforcement that permitted its
-execution:
+terminal record for a retry to the exact readiness enforcement that permitted
+its execution. The exact terminal record and exact readiness enforcement are
+independently validated before the binding is constructed:
 
 ```text
 canonical retry terminal record
