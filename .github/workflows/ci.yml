@@ -63,6 +63,10 @@ jobs:
 
       - run: PIP_CONSTRAINT=requirements.lock python -m pip install -e '.[dev]'
       - run: PYTHON=python make postgres-contract-check
+      - run: >-
+          python -m
+          src.warehouse.notification_retry_readiness_binding_postgres_contract_check
+          --dsn postgresql://risk_user:risk_password@localhost:5433/risk_platform
       - run: python -m src.warehouse.model_approval_contract_check
       - run: >-
           python -m src.warehouse.postgres_consistency
