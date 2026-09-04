@@ -38,140 +38,155 @@ def _summary(
     }
 
 
+def record_notification_retry_execution_with_cursor(
+    cursor: Any,
+    *,
+    record: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Retain one terminal record using the caller's transaction."""
+
+    validated = validate_retry_execution_record(record)
+    canonical = canonical_retry_execution_record_bytes(validated)
+    digest = hashlib.sha256(canonical).hexdigest()
+    try:
+        from psycopg.types.json import Jsonb
+    except ImportError as exc:  # pragma: no cover - required in CI.
+        raise RuntimeError("Notification retry history requires psycopg") from exc
+
+    cursor.execute(
+        """
+        SELECT record_json, document_sha256
+        FROM risk_platform.portfolio_risk_notification_retry_executions
+        WHERE request_id = %s
+        """,
+        (validated["request_id"],),
+    )
+    existing = cursor.fetchone()
+    if existing is not None:
+        existing_json, existing_digest = existing
+        if existing_digest != digest or existing_json != validated:
+            raise ValidationError(
+                "request_id already exists with different retry evidence"
+            )
+        return _summary(validated, created=False, digest=digest)
+
+    cursor.execute(
+        """
+        INSERT INTO
+            risk_platform.portfolio_risk_notification_retry_executions (
+                record_id,
+                model_version,
+                request_id,
+                execution_id,
+                plan_id,
+                terminal_status,
+                failure_code,
+                channel,
+                endpoint_host,
+                started_at,
+                finished_at,
+                recorded_at,
+                request_count,
+                attempts_persisted,
+                succeeded_count,
+                failed_count,
+                attempt_ids_json,
+                requested_event_ids_json,
+                persisted_event_ids_json,
+                delivery_fingerprint,
+                retry_policy_fingerprint,
+                retry_execution_policy_fingerprint,
+                lock_model_version,
+                lock_key_fingerprint,
+                lock_acquired,
+                lock_released,
+                execution_summary_json,
+                record_json,
+                document_sha256
+            )
+        VALUES (
+            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+            %s, %s, %s, %s, %s, %s, %s, %s, %s
+        )
+        ON CONFLICT DO NOTHING
+        RETURNING record_id
+        """,
+        (
+            validated["record_id"],
+            validated["model_version"],
+            validated["request_id"],
+            validated["execution_id"],
+            validated["plan_id"],
+            validated["terminal_status"],
+            validated["failure_code"],
+            validated["channel"],
+            validated["endpoint_host"],
+            validated["started_at"],
+            validated["finished_at"],
+            validated["recorded_at"],
+            validated["request_count"],
+            validated["attempts_persisted"],
+            validated["succeeded_count"],
+            validated["failed_count"],
+            Jsonb(validated["attempt_ids"]),
+            Jsonb(validated["requested_event_ids"]),
+            Jsonb(validated["persisted_event_ids"]),
+            validated["delivery_fingerprint"],
+            validated["retry_policy_fingerprint"],
+            validated["retry_execution_policy_fingerprint"],
+            validated["lock_model_version"],
+            validated["lock_key_fingerprint"],
+            validated["lock_acquired"],
+            validated["lock_released"],
+            (
+                None
+                if validated["execution_summary"] is None
+                else Jsonb(validated["execution_summary"])
+            ),
+            Jsonb(validated),
+            digest,
+        ),
+    )
+    created = cursor.fetchone() is not None
+    cursor.execute(
+        """
+        SELECT record_json, document_sha256
+        FROM risk_platform.portfolio_risk_notification_retry_executions
+        WHERE record_id = %s
+        """,
+        (validated["record_id"],),
+    )
+    row = cursor.fetchone()
+    if row is None:
+        raise StorageError("notification retry record could not be read after insert")
+    stored_json, stored_digest = row
+    if stored_digest != digest or stored_json != validated:
+        raise ValidationError("record_id already exists with different retry evidence")
+    if not isinstance(stored_json, Mapping):
+        raise StorageError("retained notification retry record is invalid")
+    return _summary(stored_json, created=created, digest=digest)
+
+
 def record_notification_retry_execution(
     *,
     dsn: str,
     record: Mapping[str, Any],
 ) -> dict[str, Any]:
-    validated = validate_retry_execution_record(record)
-    canonical = canonical_retry_execution_record_bytes(validated)
-    digest = hashlib.sha256(canonical).hexdigest()
+    if not isinstance(dsn, str) or not dsn.strip():
+        raise ValidationError("PostgreSQL DSN must be non-empty text")
     try:
         import psycopg
-        from psycopg.types.json import Jsonb
     except ImportError as exc:  # pragma: no cover - required in CI.
         raise RuntimeError("Notification retry history requires psycopg") from exc
 
-    created = False
-    stored: dict[str, Any] | None = None
     try:
         with psycopg.connect(dsn) as connection:
             with connection.cursor() as cursor:
-                cursor.execute(
-                    """
-                    SELECT record_json, document_sha256
-                    FROM risk_platform.portfolio_risk_notification_retry_executions
-                    WHERE request_id = %s
-                    """,
-                    (validated["request_id"],),
+                result = record_notification_retry_execution_with_cursor(
+                    cursor,
+                    record=record,
                 )
-                existing = cursor.fetchone()
-                if existing is not None:
-                    existing_json, existing_digest = existing
-                    if existing_digest != digest or existing_json != validated:
-                        raise ValidationError(
-                            "request_id already exists with different retry evidence"
-                        )
-                    return _summary(validated, created=False, digest=digest)
-
-                cursor.execute(
-                    """
-                    INSERT INTO
-                        risk_platform.portfolio_risk_notification_retry_executions (
-                            record_id,
-                            model_version,
-                            request_id,
-                            execution_id,
-                            plan_id,
-                            terminal_status,
-                            failure_code,
-                            channel,
-                            endpoint_host,
-                            started_at,
-                            finished_at,
-                            recorded_at,
-                            request_count,
-                            attempts_persisted,
-                            succeeded_count,
-                            failed_count,
-                            attempt_ids_json,
-                            requested_event_ids_json,
-                            persisted_event_ids_json,
-                            delivery_fingerprint,
-                            retry_policy_fingerprint,
-                            retry_execution_policy_fingerprint,
-                            lock_model_version,
-                            lock_key_fingerprint,
-                            lock_acquired,
-                            lock_released,
-                            execution_summary_json,
-                            record_json,
-                            document_sha256
-                        )
-                    VALUES (
-                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s, %s, %s, %s, %s, %s
-                    )
-                    ON CONFLICT DO NOTHING
-                    RETURNING record_id
-                    """,
-                    (
-                        validated["record_id"],
-                        validated["model_version"],
-                        validated["request_id"],
-                        validated["execution_id"],
-                        validated["plan_id"],
-                        validated["terminal_status"],
-                        validated["failure_code"],
-                        validated["channel"],
-                        validated["endpoint_host"],
-                        validated["started_at"],
-                        validated["finished_at"],
-                        validated["recorded_at"],
-                        validated["request_count"],
-                        validated["attempts_persisted"],
-                        validated["succeeded_count"],
-                        validated["failed_count"],
-                        Jsonb(validated["attempt_ids"]),
-                        Jsonb(validated["requested_event_ids"]),
-                        Jsonb(validated["persisted_event_ids"]),
-                        validated["delivery_fingerprint"],
-                        validated["retry_policy_fingerprint"],
-                        validated["retry_execution_policy_fingerprint"],
-                        validated["lock_model_version"],
-                        validated["lock_key_fingerprint"],
-                        validated["lock_acquired"],
-                        validated["lock_released"],
-                        (
-                            None
-                            if validated["execution_summary"] is None
-                            else Jsonb(validated["execution_summary"])
-                        ),
-                        Jsonb(validated),
-                        digest,
-                    ),
-                )
-                created = cursor.fetchone() is not None
-                cursor.execute(
-                    """
-                    SELECT record_json, document_sha256
-                    FROM risk_platform.portfolio_risk_notification_retry_executions
-                    WHERE record_id = %s
-                    """,
-                    (validated["record_id"],),
-                )
-                row = cursor.fetchone()
-                if row is None:
-                    raise StorageError(
-                        "notification retry record could not be read after insert"
-                    )
-                stored_json, stored_digest = row
-                if stored_digest != digest or stored_json != validated:
-                    raise ValidationError(
-                        "record_id already exists with different retry evidence"
-                    )
-                stored = dict(stored_json)
             connection.commit()
     except (ValidationError, StorageError):
         raise
@@ -179,10 +194,7 @@ def record_notification_retry_execution(
         raise StorageError(
             "notification retry history database operation failed"
         ) from None
-
-    if stored is None:  # pragma: no cover - guarded by the transaction.
-        raise StorageError("notification retry history result is unavailable")
-    return _summary(stored, created=created, digest=digest)
+    return result
 
 
 def _read_record(path: Path) -> dict[str, Any]:
