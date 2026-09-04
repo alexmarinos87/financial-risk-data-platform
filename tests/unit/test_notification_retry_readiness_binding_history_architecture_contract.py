@@ -18,7 +18,7 @@ def test_retry_readiness_binding_history_is_append_only_and_source_reconciled() 
         encoding="utf-8"
     )
     compose = Path("docker-compose.yml").read_text(encoding="utf-8")
-    workflow = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
+    makefile = Path("Makefile").read_text(encoding="utf-8")
     normalized_docs = " ".join(docs.split()).casefold()
 
     for required in (
@@ -65,7 +65,7 @@ def test_retry_readiness_binding_history_is_append_only_and_source_reconciled() 
 
     assert "26_notification_retry_readiness_binding_schema.sql:ro" in compose
     assert (
-        "notification_retry_readiness_binding_postgres_contract_check" in workflow
+        "notification_retry_readiness_binding_postgres_contract_check" in makefile
     )
 
     for required in (
