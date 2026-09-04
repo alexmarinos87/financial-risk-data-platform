@@ -19,6 +19,7 @@ def test_retry_readiness_binding_history_is_append_only_and_source_reconciled() 
     )
     compose = Path("docker-compose.yml").read_text(encoding="utf-8")
     makefile = Path("Makefile").read_text(encoding="utf-8")
+    normalized_schema = schema.casefold()
     normalized_docs = " ".join(docs.split()).casefold()
 
     for required in (
@@ -31,7 +32,7 @@ def test_retry_readiness_binding_history_is_append_only_and_source_reconciled() 
         "references\n        risk_platform.portfolio_risk_notification_retry_executions",
         "references\n        risk_platform.notification_execution_readiness_decisions",
     ):
-        assert required in schema
+        assert required in normalized_schema
 
     for required in (
         "record_notification_retry_readiness_binding_with_cursor",
