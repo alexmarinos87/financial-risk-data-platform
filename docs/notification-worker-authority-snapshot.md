@@ -54,15 +54,21 @@ No claim of a serializable multi-source snapshot is made.
 make quality-check
 make security-check
 make readiness-check
+make postgres-contract-check
 ```
 
 Unit tests use fake cursors and connections with the real authority validators.
-They prove SQL/parameter/transaction intent, not PostgreSQL execution of the new
-SELECT. The unchanged PostgreSQL contract job remains required; a dedicated real
-snapshot-query proof is a separate acceptance item before operational use.
+The existing `notification_worker_authority_postgres_contract_check` additionally
+executes the new SELECT for every lifecycle head/sequence, an active grant and a
+missing worker. It round-trips snapshots through canonical validation and invokes
+the public read-only adapter on a separate connection to prove uncommitted
+fixture records are not visible. Four explicit `clocked_snapshot_*` proof flags
+must pass in the real PostgreSQL CI log. Existing rollback, replay and mutation
+rejection proofs remain unchanged. No workflow or Make target change is needed.
 
-No schema, workflow, dependency or committed configuration change. No application
-database access during development, notification, scheduler activation,
-deployment or Terraform apply. Exact-head CI and self-review are evidence, not
-explicit engineer acceptance. The following increments bind reviewed
-configuration and expose validation-first operator diagnostics.
+No schema, workflow, dependency or committed configuration change. Database
+operations in CI use the existing disposable fixture and roll back its records.
+No application database access during development, notification, scheduler
+activation, deployment or Terraform apply. Exact-head CI and self-review are
+evidence, not explicit engineer acceptance. The following increments bind
+reviewed configuration and expose validation-first operator diagnostics.
