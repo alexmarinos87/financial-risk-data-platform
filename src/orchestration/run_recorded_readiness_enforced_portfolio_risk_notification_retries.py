@@ -553,13 +553,15 @@ def execute_and_record_readiness_enforced_portfolio_risk_notification_retries(
         terminal_record=terminal_record,
         readiness_binding=readiness_binding,
     )
-    terminal_history = bundle_history.get("terminal_history")
-    readiness_history = bundle_history.get("readiness_history")
-    if not isinstance(terminal_history, Mapping) or not isinstance(
-        readiness_history,
+    terminal_history_value = bundle_history.get("terminal_history")
+    readiness_history_value = bundle_history.get("readiness_history")
+    if not isinstance(terminal_history_value, Mapping) or not isinstance(
+        readiness_history_value,
         Mapping,
     ):
         raise StorageError("atomic retry governance history result is invalid")
+    terminal_history = dict(terminal_history_value)
+    readiness_history = dict(readiness_history_value)
     destination_history = _record_destination_binding(
         dsn=dsn,
         terminal_record=terminal_record,
@@ -577,8 +579,8 @@ def execute_and_record_readiness_enforced_portfolio_risk_notification_retries(
 
     return {
         "execution_summary": execution_summary,
-        "terminal_history": dict(terminal_history),
-        "readiness_history": dict(readiness_history),
+        "terminal_history": terminal_history,
+        "readiness_history": readiness_history,
         "destination_history": destination_history,
         "replayed": False,
         "atomic_commit": True,
