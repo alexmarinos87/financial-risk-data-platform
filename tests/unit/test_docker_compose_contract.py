@@ -54,6 +54,7 @@ def test_local_database_seed_mounts_are_read_only_and_ordered() -> None:
         "./sql/notification_retry_readiness_binding_schema.sql:/docker-entrypoint-initdb.d/26_notification_retry_readiness_binding_schema.sql:ro",
         "./sql/notification_retry_readiness_follow_up_schema.sql:/docker-entrypoint-initdb.d/27_notification_retry_readiness_follow_up_schema.sql:ro",
         "./sql/notification_worker_authority_schema.sql:/docker-entrypoint-initdb.d/28_notification_worker_authority_schema.sql:ro",
+        "./sql/notification_worker_suspension_schema.sql:/docker-entrypoint-initdb.d/29_notification_worker_suspension_schema.sql:ro",
     ]
     assert services["mongo"]["volumes"] == [
         "./mongo/init:/docker-entrypoint-initdb.d:ro"
