@@ -156,7 +156,9 @@ def run_contract_check(dsn: str) -> dict[str, Any]:
                     "UPDATE risk_platform.notification_worker_authority_history SET plan_id = plan_id WHERE worker_id = %s",
                     "DELETE FROM risk_platform.notification_worker_authority_history WHERE worker_id = %s",
                 ):
-                    _reject(connection, lambda sql=operation: cursor.execute(sql, (worker_id,)), "append-only")
+                    def mutate(sql: str = operation) -> None:
+                        cursor.execute(sql, (worker_id,))
+                    _reject(connection, mutate, "append-only")
                 _reject(connection, lambda: cursor.execute("TRUNCATE risk_platform.notification_worker_authority_history"), "append-only")
                 results["update_delete_truncate_rejected"] = True
                 cursor.execute("SELECT clock_timestamp()")
