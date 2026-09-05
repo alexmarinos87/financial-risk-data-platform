@@ -751,19 +751,11 @@ def _timestamp(value: str) -> datetime:
 
 
 def _write_summary(path: Path, summary: Mapping[str, Any]) -> None:
-    if path.is_symlink():
-        raise StorageError("notification worker summary must not be a symbolic link")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    try:
-        temporary.write_text(
-            json.dumps(summary, indent=2, sort_keys=True, allow_nan=False) + "\n",
-            encoding="utf-8",
-        )
-        temporary.replace(path)
-    except (OSError, TypeError, ValueError):
-        temporary.unlink(missing_ok=True)
-        raise StorageError("unable to write notification worker plan") from None
+    from src.orchestration.notification_worker_summary import (
+        write_notification_worker_summary,
+    )
+
+    write_notification_worker_summary(path, summary)
 
 
 def _build_parser() -> argparse.ArgumentParser:
