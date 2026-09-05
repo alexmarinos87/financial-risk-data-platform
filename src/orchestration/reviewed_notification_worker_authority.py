@@ -56,6 +56,15 @@ def _bind_reviewed_plan(
     return retained, destination
 
 
+def _validate_retained_plan_field(value: Mapping[str, Any]) -> None:
+    if not isinstance(value, Mapping):
+        raise ValidationError("retained worker authority must be a mapping")
+    plan = value.get("plan")
+    if not isinstance(plan, Mapping):
+        raise ValidationError("retained worker authority must contain a plan mapping")
+    validate_notification_worker_plan(plan)
+
+
 def build_reviewed_worker_authority_transition(
     *, plan: Mapping[str, Any], request_id: str, operator_id: str, action: str,
     requested_at: datetime | str, effective_at: datetime | str,
@@ -78,9 +87,7 @@ def build_reviewed_worker_authority_transition(
     )
     prior = None
     if previous is not None:
-        if not isinstance(previous, Mapping):
-            raise ValidationError("previous worker authority must be a mapping")
-        validate_notification_worker_plan(previous.get("plan"))
+        _validate_retained_plan_field(previous)
         prior = validate_worker_authority_transition(previous)
     result = build_worker_authority_transition(
         plan=retained, request_id=request_id, operator_id=operator_id,
@@ -107,6 +114,9 @@ def validate_reviewed_worker_authority_transition(
     destination_config_path: Path = Path("config/notification_destinations.yaml"),
 ) -> dict[str, Any]:
     """Revalidate retained transition evidence against its reviewed snapshots."""
+    _validate_retained_plan_field(transition)
+    if previous is not None:
+        _validate_retained_plan_field(previous)
     validated = validate_worker_authority_chain(transition, previous)
     result = build_reviewed_worker_authority_transition(
         plan=validated["plan"], request_id=validated["request_id"],
