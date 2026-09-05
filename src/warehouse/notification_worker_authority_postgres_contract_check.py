@@ -23,6 +23,10 @@ from src.warehouse.notification_worker_authority_history import (
     LOCK_PREFIX, LOCK_SQL, read_current_worker_authority_with_cursor,
     record_worker_authority_with_cursor,
 )
+from src.warehouse.notification_worker_authority_snapshot import (
+    read_worker_authority_snapshot, read_worker_authority_snapshot_with_cursor,
+    validate_worker_authority_snapshot,
+)
 
 
 def _plan(directory: Path, worker_id: str, planned_at: datetime) -> dict[str, Any]:
@@ -128,6 +132,11 @@ def run_contract_check(dsn: str) -> dict[str, Any]:
                     if retained["created"] is not True or retained["authority_sequence"] != sequence:
                         raise AssertionError("authority sequence did not advance exactly once")
                     current = read_current_worker_authority_with_cursor(cursor, worker_id=worker_id)
+                    snapshot = read_worker_authority_snapshot_with_cursor(cursor, worker_id=worker_id)
+                    if (snapshot["transition"] != document or snapshot["authority_sequence"] != sequence
+                            or snapshot["authority_state"] != expected
+                            or validate_worker_authority_snapshot(snapshot) != snapshot):
+                        raise AssertionError("clocked authority snapshot differs from current head")
                     cursor.execute(
                         "SELECT authority_state, runtime_permission_granted "
                         "FROM risk_platform.current_notification_worker_authority WHERE worker_id = %s",
@@ -136,6 +145,7 @@ def run_contract_check(dsn: str) -> dict[str, Any]:
                     if current["authority_state"] != expected or cursor.fetchone() != (expected, False):
                         raise AssertionError("SQL and canonical current states differ")
                 results["lifecycle_and_sequence"] = True
+                results["clocked_snapshot_lifecycle"] = True
                 replay = record_worker_authority_with_cursor(cursor, transition=first)
                 if replay["created"] is not False or replay["authority_sequence"] != 1:
                     raise AssertionError("historical exact replay did not converge")
@@ -172,12 +182,24 @@ def run_contract_check(dsn: str) -> dict[str, Any]:
                 if read_current_worker_authority_with_cursor(cursor, worker_id=active_worker)["authority_state"] != "active":
                     raise AssertionError("current grant was not active")
                 results["active_state"] = True
+                active_snapshot = read_worker_authority_snapshot_with_cursor(cursor, worker_id=active_worker)
+                if active_snapshot["authority_state"] != "active" or active_snapshot["transition"] != active:
+                    raise AssertionError("clocked snapshot did not retain active authority")
+                results["clocked_snapshot_active"] = True
                 future = _grant(_plan(directory, worker_id + "-future", now + timedelta(days=1)), worker_id + "-future")
                 _reject(connection, lambda: record_worker_authority_with_cursor(cursor, transition=future), "check constraint")
                 results["future_head_rejected"] = True
                 if read_current_worker_authority_with_cursor(cursor, worker_id=worker_id + "-missing")["authority_state"] != "inactive":
                     raise AssertionError("unknown worker was not inactive")
                 results["unknown_worker_inactive"] = True
+                missing = read_worker_authority_snapshot_with_cursor(cursor, worker_id=worker_id + "-missing")
+                if missing["transition"] is not None or missing["authority_state"] != "inactive" or not missing["observed_at"]:
+                    raise AssertionError("missing authority did not retain its database observation clock")
+                results["clocked_snapshot_missing"] = True
+                isolated = read_worker_authority_snapshot(dsn=dsn, worker_id=worker_id)
+                if isolated["transition"] is not None or isolated["runtime_permission_granted"] is not False:
+                    raise AssertionError("read-only connection observed uncommitted fixture authority")
+                results["clocked_snapshot_read_only_isolation"] = True
                 cursor.execute(
                     "SELECT COUNT(*), MAX(authority_sequence) FROM "
                     "risk_platform.notification_worker_authority_history WHERE worker_id = %s", (worker_id,),
