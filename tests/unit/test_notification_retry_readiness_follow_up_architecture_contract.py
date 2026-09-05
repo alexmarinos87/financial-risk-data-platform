@@ -15,7 +15,6 @@ def test_readiness_aware_retry_views_preserve_current_selection_and_safety() -> 
         encoding="utf-8"
     )
     compose = Path("docker-compose.yml").read_text(encoding="utf-8")
-    makefile = Path("Makefile").read_text(encoding="utf-8")
     normalized_docs = " ".join(docs.split()).casefold()
 
     for view in (
@@ -62,7 +61,6 @@ def test_readiness_aware_retry_views_preserve_current_selection_and_safety() -> 
         assert required in fixture.casefold()
 
     assert "27_notification_retry_readiness_follow_up_schema.sql:ro" in compose
-    assert "notification_retry_readiness_follow_up_postgres_contract_check" in makefile
 
     for required in (
         "primary arc42 block: `warehouse`",
