@@ -24,6 +24,8 @@ from src.warehouse.notification_worker_authority_history import (
     record_worker_authority_with_cursor,
 )
 
+from src.warehouse.notification_worker_suspension_postgres_contract_check import check_worker_suspension_contract
+
 
 def _plan(directory: Path, worker_id: str, planned_at: datetime) -> dict[str, Any]:
     configs = {
@@ -159,7 +161,7 @@ def run_contract_check(dsn: str) -> dict[str, Any]:
                     def mutate(sql: str = operation) -> None:
                         cursor.execute(sql, (worker_id,))
                     _reject(connection, mutate, "append-only")
-                _reject(connection, lambda: cursor.execute("TRUNCATE risk_platform.notification_worker_authority_history"), "append-only")
+                _reject(connection, lambda: cursor.execute("TRUNCATE risk_platform.notification_worker_authority_history, risk_platform.notification_worker_suspension_evidence"), "append-only")
                 results["update_delete_truncate_rejected"] = True
                 cursor.execute("SELECT clock_timestamp()")
                 clock_row = cursor.fetchone()
@@ -172,6 +174,7 @@ def run_contract_check(dsn: str) -> dict[str, Any]:
                 if read_current_worker_authority_with_cursor(cursor, worker_id=active_worker)["authority_state"] != "active":
                     raise AssertionError("current grant was not active")
                 results["active_state"] = True
+                results.update(check_worker_suspension_contract(connection, cursor, active))
                 future = _grant(_plan(directory, worker_id + "-future", now + timedelta(days=1)), worker_id + "-future")
                 _reject(connection, lambda: record_worker_authority_with_cursor(cursor, transition=future), "check constraint")
                 results["future_head_rejected"] = True
@@ -199,6 +202,13 @@ def run_contract_check(dsn: str) -> dict[str, Any]:
                 if cursor.fetchone() != (0,):
                     raise AssertionError("fixture history survived transaction rollback")
                 results["fixture_rolled_back"] = True
+                cursor.execute(
+                    "SELECT COUNT(*) FROM risk_platform.notification_worker_suspension_evidence WHERE worker_id = %s",
+                    (active_worker,),
+                )
+                if cursor.fetchone() != (0,):
+                    raise AssertionError("suspension evidence survived fixture rollback")
+                results["suspension_fixture_rolled_back"] = True
         finally:
             connection.rollback()
             competitor.rollback()
