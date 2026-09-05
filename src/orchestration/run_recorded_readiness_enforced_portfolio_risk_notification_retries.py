@@ -275,6 +275,7 @@ def execute_and_record_readiness_enforced_portfolio_risk_notification_retries(
     selected_destination_reader = (
         destination_binding_reader or read_notification_retry_destination_binding
     )
+    destination_history: dict[str, Any] | None
     existing = selected_history_reader(
         dsn=dsn,
         request_id=selected_request_id,
@@ -283,9 +284,12 @@ def execute_and_record_readiness_enforced_portfolio_risk_notification_retries(
         record_value = existing.get("record")
         if not isinstance(record_value, Mapping):
             raise StorageError("retained retry terminal record is invalid")
+        terminal_record_id = record_value.get("record_id")
+        if not isinstance(terminal_record_id, str):
+            raise StorageError("retained retry terminal record identity is invalid")
         readiness_evidence = selected_readiness_reader(
             dsn=dsn,
-            terminal_record_id=record_value.get("record_id"),
+            terminal_record_id=terminal_record_id,
         )
         terminal, terminal_history, retained_readiness = _existing_result(
             existing=existing,
