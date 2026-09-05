@@ -1,0 +1,27 @@
+model_version: portfolio-risk-notification-worker-config-v1
+workers:
+  risk-operations-managed:
+    enabled: false
+    destination_id: risk-operations-webhook
+    execution_kinds:
+      - initial
+      - retry
+    schedule:
+      mode: fixed_interval
+      interval_seconds: 300
+      jitter_seconds: 30
+      timezone: UTC
+    limits:
+      max_initial_events: 25
+      max_retry_events: 25
+      max_concurrency: 1
+      execution_timeout_seconds: 120
+    readiness:
+      required_status: allowed
+      max_age_seconds: 300
+    suspension:
+      block_on_readiness_failure: true
+      block_on_persistence_ambiguity: true
+      block_on_expired_review: true
+      max_consecutive_failures: 3
+      cooldown_seconds: 900
