@@ -6,7 +6,7 @@ import json
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -438,21 +438,16 @@ def _next_schedule(
     worker: NotificationWorker,
     planned_at: datetime,
 ) -> tuple[datetime, int, int]:
-    epoch = int(planned_at.timestamp())
-    interval = worker.schedule.interval_seconds
-    boundary_epoch = ((epoch // interval) + 1) * interval
-    seed = hashlib.sha256(
-        f"{worker.fingerprint}:{boundary_epoch}".encode("utf-8")
-    ).digest()
-    jitter_limit = worker.schedule.jitter_seconds
-    jitter = 0 if jitter_limit == 0 else int.from_bytes(seed[:8], "big") % (
-        jitter_limit + 1
+    from src.orchestration.notification_worker_plan_validation import (
+        deterministic_schedule,
     )
-    scheduled_for = datetime.fromtimestamp(
-        boundary_epoch + jitter,
-        tz=timezone.utc,
+
+    return deterministic_schedule(
+        worker.fingerprint,
+        planned_at,
+        worker.schedule.interval_seconds,
+        worker.schedule.jitter_seconds,
     )
-    return scheduled_for, boundary_epoch, jitter
 
 
 def _work_items(worker: NotificationWorker) -> list[dict[str, Any]]:
@@ -668,79 +663,11 @@ def plan_notification_worker(
 
 
 def validate_notification_worker_plan(plan: Mapping[str, Any]) -> dict[str, Any]:
-    if not isinstance(plan, Mapping):
-        raise ValidationError("notification worker plan must be a mapping")
-    expected = {
-        "plan_id",
-        "blocking_reasons",
-        "concurrency_control",
-        "delivery",
-        "destination",
-        "execution",
-        "model_version",
-        "planned_at",
-        "readiness",
-        "schedule",
-        "side_effects",
-        "status",
-        "suspension",
-        "worker",
-    }
-    if set(plan) != expected:
-        raise ValidationError("notification worker plan fields are invalid")
-    if plan["model_version"] != PLAN_MODEL_VERSION:
-        raise ValidationError("notification worker plan model_version is unsupported")
-    if plan["status"] not in {"disabled", "blocked", "would_schedule"}:
-        raise ValidationError("notification worker plan status is invalid")
-    reasons = plan["blocking_reasons"]
-    if not isinstance(reasons, list):
-        raise ValidationError("blocking_reasons must be an array")
-    if reasons != [reason for reason in BLOCKING_REASON_ORDER if reason in reasons]:
-        raise ValidationError("blocking_reasons are not canonical")
-    if len(reasons) != len(set(reasons)):
-        raise ValidationError("blocking_reasons contain duplicates")
-    side_effects = exact_mapping(
-        plan["side_effects"],
-        frozenset(
-            {
-                "acknowledgement_mutated",
-                "cloud_schedule_activated",
-                "database_read_performed",
-                "delivery_attempt_written",
-                "external_request_performed",
-                "infrastructure_deployed",
-                "outbox_mutated",
-                "terraform_apply_performed",
-            }
-        ),
-        "worker plan side effects",
+    from src.orchestration.notification_worker_plan_validation import (
+        validate_retained_notification_worker_plan,
     )
-    if any(value is not False for value in side_effects.values()):
-        raise ValidationError("notification worker plan reports a side effect")
-    planned = aware_utc(plan["planned_at"], "planned_at")
-    schedule = plan["schedule"]
-    if not isinstance(schedule, Mapping):
-        raise ValidationError("worker plan schedule must be a mapping")
-    scheduled_for = aware_utc(schedule.get("scheduled_for"), "scheduled_for")
-    if scheduled_for <= planned:
-        raise ValidationError("scheduled_for must follow planned_at")
-    worker = plan["worker"]
-    if not isinstance(worker, Mapping):
-        raise ValidationError("worker plan identity must be a mapping")
-    enabled = worker.get("enabled")
-    if type(enabled) is not bool:
-        raise ValidationError("worker plan enabled state is invalid")
-    if plan["status"] == "disabled" and enabled is not False:
-        raise ValidationError("disabled plan requires a disabled worker")
-    if plan["status"] == "would_schedule" and reasons:
-        raise ValidationError("would_schedule plan must have no blockers")
-    if plan["status"] == "blocked" and (not reasons or enabled is not True):
-        raise ValidationError("blocked plan must have an enabled worker and blockers")
-    identity = dict(plan)
-    supplied_plan_id = identity.pop("plan_id")
-    if supplied_plan_id != _plan_id(identity):
-        raise ValidationError("notification worker plan_id does not match content")
-    return dict(plan)
+
+    return validate_retained_notification_worker_plan(plan)
 
 
 def _timestamp(value: str) -> datetime:
