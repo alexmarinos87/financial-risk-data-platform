@@ -36,6 +36,7 @@ services:
       - ./sql/notification_execution_readiness_schema.sql:/docker-entrypoint-initdb.d/25_notification_execution_readiness_schema.sql:ro
       - ./sql/notification_retry_readiness_binding_schema.sql:/docker-entrypoint-initdb.d/26_notification_retry_readiness_binding_schema.sql:ro
       - ./sql/notification_retry_readiness_follow_up_schema.sql:/docker-entrypoint-initdb.d/27_notification_retry_readiness_follow_up_schema.sql:ro
+      - ./sql/notification_worker_authority_schema.sql:/docker-entrypoint-initdb.d/28_notification_worker_authority_schema.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U risk_user -d risk_platform"]
       interval: 5s
