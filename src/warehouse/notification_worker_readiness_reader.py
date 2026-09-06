@@ -7,6 +7,7 @@ from typing import Any
 
 from src.common.exceptions import StorageError, ValidationError
 from src.orchestration.notification_worker_authority_contract import validate_worker_authority_transition
+from src.warehouse.notification_worker_readiness_session import require_fresh_readiness_session
 from src.warehouse.notification_worker_readiness_snapshot import REVIEW_FIELDS, build_worker_readiness_snapshot
 from src.warehouse.notification_worker_readiness_source import source_bytes, source_identifier, source_time
 
@@ -57,16 +58,20 @@ def read_worker_readiness_with_cursor(cursor: Any, *, worker_id: str) -> dict[st
     """Require a fresh read-only READ COMMITTED statement, not an older transaction.
 
     The owning API supplies an autocommit connection. This variant does not change
-    caller transaction settings, acquire locks, or silently accept stale clocks.
+    caller transaction settings or acquire locks. The connection must be exclusive.
     """
     selected = source_identifier(worker_id)
     try:
+        require_fresh_readiness_session(cursor)
         cursor.execute(READINESS_SOURCE_SQL, (selected,))
         row = cursor.fetchone()
         if not isinstance(row, (tuple, list)) or len(row) != 6:
             raise StorageError("worker readiness source query returned an invalid envelope")
-        instant = source_time(row[0])
-        if source_time(row[1]) != instant or row[2] != "read committed" or row[3] != "on":
+        # Readiness views use transaction time. Freshness is established above
+        # from real session state, not equality of protocol-dependent clocks.
+        source_time(row[0])
+        instant = source_time(row[1])
+        if row[2] != "read committed" or row[3] != "on":
             raise StorageError("worker readiness sources require a fresh read-only statement")
         retained, entries = row[4], row[5]
         if not isinstance(entries, list) or len(entries) > 2:

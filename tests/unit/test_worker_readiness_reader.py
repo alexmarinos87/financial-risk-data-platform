@@ -10,12 +10,14 @@ import pytest
 from src.common.exceptions import StorageError, ValidationError
 from src.warehouse import notification_worker_readiness_reader as reader
 from src.warehouse.notification_worker_readiness_source import source_bytes
+from test_worker_readiness_session import session_cursor
 from test_worker_readiness_snapshot import OBSERVED, readiness_authority, source_entry
 
 
 class Cursor:
     def __init__(self, row: Any) -> None:
         self.row = row
+        self.connection = session_cursor().connection
         self.calls: list[tuple[str, Any]] = []
     def execute(self, sql: str, params: Any = None) -> None:
         self.calls.append((sql, params))
@@ -53,12 +55,29 @@ def test_unknown_worker_is_not_healthy() -> None:
     assert result["snapshot"] is None
 
 
-@pytest.mark.parametrize("index,value", [(1, OBSERVED - timedelta(microseconds=1)), (2, "repeatable read"), (3, "off")])
-def test_old_transaction_or_wrong_session_mode_cannot_supply_current_evidence(index: int, value: Any) -> None:
+@pytest.mark.parametrize("index,value", [(2, "repeatable read"), (3, "off")])
+def test_wrong_session_mode_cannot_supply_current_evidence(index: int, value: Any) -> None:
     row = envelope()
     row[index] = value
     with pytest.raises(StorageError, match="fresh read-only"):
         reader.read_worker_readiness_with_cursor(Cursor(row), worker_id="authority-worker")
+
+
+@pytest.mark.parametrize("offset", [-1, 0, 1])
+def test_fresh_session_does_not_require_equal_protocol_clocks(offset: int) -> None:
+    row = envelope()
+    row[0] = OBSERVED + timedelta(microseconds=offset)
+    result = reader.read_worker_readiness_with_cursor(Cursor(row), worker_id="authority-worker")
+    assert result["status"] == "ready_sources"
+    assert result["observed_at"] == OBSERVED.isoformat()
+
+
+def test_equal_clocks_cannot_hide_an_existing_transaction() -> None:
+    cursor = Cursor(envelope())
+    cursor.connection.info.transaction_status.name = "INTRANS"
+    with pytest.raises(StorageError, match="fresh read-only"):
+        reader.read_worker_readiness_with_cursor(cursor, worker_id="authority-worker")
+    assert cursor.calls == []
 
 
 @pytest.mark.parametrize("variant", ["oversize_authority", "oversize_record", "three_rows", "wrong_worker", "digest", "bool_sequence", "orphan", "bad_envelope"])

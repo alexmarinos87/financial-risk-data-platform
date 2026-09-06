@@ -13,21 +13,27 @@ retained readiness record. Record JSON is size-checked server-side before transf
 A third row is retained as an ambiguity sentinel and rejected instead of silently
 truncating an unexpected inventory. The aggregate Python boundary remains 1 MiB.
 The reader independently verifies authority identity/digest and reopens each
-source through the preceding semantic and current-review reconciliation layers.
+source through semantic and current-review reconciliation.
 
 ## Clock and transaction contract
 
-A single statement supplies both data and observation time. Existing review views
-use CURRENT_TIMESTAMP, which is transaction-start time. The reader therefore
-requires transaction and statement clocks to agree and verifies read-only READ
-COMMITTED mode. Its dedicated autocommit SELECT has a fresh transaction clock;
-a cursor borrowed from an older explicit transaction is rejected, not silently
-reported as current. The cursor variant never changes caller transaction settings.
+The original timestamp-equality guard rejected a fresh parameterized query in CI
+run 463 before the unknown-worker scenario could complete. Transaction freshness
+is now checked from connection state **before** the data statement: the connection
+must be open, explicitly autocommit, IDLE, outside pipeline mode, and exclusively
+owned for the operation. Existing, failed, active and unknown transactions are
+rejected without sending SQL. Neither a clock tolerance nor equal timestamps can
+bypass this check. The cursor variant never changes caller transaction settings.
 
-PostgreSQL documents transaction_timestamp and statement_timestamp under Date/Time
-Functions, section Current Date/Time; they agree for the first command of a
-transaction. Psycopg autocommit avoids implicitly keeping a transaction open across
-unrelated commands. This adapter uses only session-local settings and SELECT.
+The SELECT verifies read-only READ COMMITTED mode and returns both timestamps.
+`observed_at` uses the new transaction's timestamp, matching CURRENT_TIMESTAMP in
+the existing views. Statement time is parsed but is not compared for equality;
+protocol preparation may produce distinct timestamps in a fresh operation. The
+owning function closes its dedicated connection on both success and failure.
+Concurrent use of a supplied cursor/connection is outside this API's contract.
+
+References: Psycopg, "Transactions management" and `ConnectionInfo.transaction_status`;
+PostgreSQL, "Message Flow", extended query protocol and timestamp behaviour.
 
 ## Meaning and limitations
 
@@ -46,20 +52,23 @@ and no unaccepted suspension or preflight-diagnostics code is imported.
 
 ## Executable evidence
 
-The existing `make postgres-contract-check` runs the new source-reader proof after
-its established readiness and authority fixtures. It uses actual retained records
-and a replaced activation review to prove supersession, exact selected IDs,
-unknown-worker blocking, no read-side authority writes, replacement by a newer stop,
-and rejection of an older transaction clock. Unit tests additionally exercise
-matching ready sources, malformed rows, bounds, wrong modes, digest tampering,
-parameterization, sanitized failure and connection cleanup.
+`make postgres-contract-check` invokes the source-reader proof after its established
+readiness and authority fixtures. It reopens actual retained records, detects
+superseded activation reviews, reconciles exact selected IDs, checks unknown-worker
+blocking and repeated read-side immutability, observes a newer stop, and rejects
+an existing explicit transaction. Unit tests also cover matching ready sources,
+malformed rows, bounds, wrong modes, tampered digests and connection cleanup.
 
-The proof explicitly commits two synthetic authority records so dedicated read-only
-sessions can see them. They remain only in the disposable contract database until
-normal CI teardown. This is not a rollback-only fixture and must not run against
-production. The test target already creates and tears down that disposable database.
-No schema, application configuration, workflow or dependency change is required.
+The session regression tests cover IDLE/autocommit, all four non-IDLE states,
+pipeline mode, missing state evidence and strict booleans. Reader tests check that
+unequal clocks in an idle session are accepted and that equal clocks cannot hide
+an existing transaction. All original source-integrity assertions remain enabled.
 
-The reader performs PostgreSQL I/O only. No notification, provider request, delivery
-lock, scheduler activation, deployment or `terraform apply` occurs. Source validation
-and passing CI do not authorize runtime execution or replace exact-diff acceptance.
+The proof commits two synthetic authority records so dedicated read-only sessions
+can see them. They remain only in the disposable contract database until CI
+teardown. This is not a rollback-only fixture and must not run against production.
+No schema, application configuration, workflow or dependency is changed.
+
+The application reader performs PostgreSQL reads only. No notification, provider
+request, delivery lock, scheduler activation, deployment or Terraform apply occurs.
+Passing CI does not authorize execution or replace exact-diff human acceptance.
