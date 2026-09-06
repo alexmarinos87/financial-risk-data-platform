@@ -123,3 +123,18 @@ def test_only_successfully_created_database_is_dropped(
     else:
         assert len(drops) == 1
         assert creates[0].split('"')[1] == drops[0].split('"')[1]
+
+
+@pytest.mark.parametrize("parameters", [
+    {"host": None}, {"host": 1}, {"host": []},
+    {"host": "localhost", "hostaddr": None},
+    {"host": "localhost", "hostaddr": 1},
+    {"host": "localhost", "hostaddr": []},
+])
+def test_non_text_host_values_fail_closed(parameters: dict[str, Any]) -> None:
+    with pytest.raises(ValueError, match="loopback"):
+        _check_local_parameters(parameters)
+
+
+def test_non_host_driver_values_do_not_weaken_or_break_host_checks() -> None:
+    _check_local_parameters({"host": "localhost", "port": 5433, "connect_timeout": None})

@@ -19,9 +19,12 @@ DATABASE_PREFIX = "worker_preflight_contract_"
 LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
 
-def _check_local_parameters(parameters: Mapping[str, str]) -> None:
-    if (parameters.get("host") not in LOCAL_HOSTS or "service" in parameters
-            or ("hostaddr" in parameters and parameters["hostaddr"] not in LOCAL_HOSTS - {"localhost"})):
+def _check_local_parameters(parameters: Mapping[str, object]) -> None:
+    host = parameters.get("host")
+    hostaddr = parameters.get("hostaddr")
+    if (not isinstance(host, str) or host not in LOCAL_HOSTS or "service" in parameters
+            or ("hostaddr" in parameters and (not isinstance(hostaddr, str)
+                or hostaddr not in LOCAL_HOSTS - {"localhost"}))):
         raise ValueError("disposable preflight proof requires an explicit loopback database host")
 
 
