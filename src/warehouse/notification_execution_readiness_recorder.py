@@ -208,19 +208,9 @@ def record_notification_execution_readiness(
 
 
 def _read_record(path: Path) -> dict[str, Any]:
-    if path.is_symlink():
-        raise ValidationError("notification readiness record must not be a symbolic link")
-    if not path.is_file():
-        raise ValidationError("notification readiness record must be a regular file")
-    if path.stat().st_size > MAX_RECORD_BYTES:
-        raise ValidationError("notification readiness record exceeds 1 MB")
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, ValueError):
-        raise ValidationError("notification readiness record could not be read") from None
-    if not isinstance(value, Mapping):
-        raise ValidationError("notification readiness record must be a JSON object")
-    return dict(value)
+    from src.common.bounded_json import load_bounded_json_object
+
+    return load_bounded_json_object(path, max_bytes=MAX_RECORD_BYTES)
 
 
 def _build_parser() -> argparse.ArgumentParser:
