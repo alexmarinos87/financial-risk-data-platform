@@ -87,4 +87,17 @@ def test_new_postgres_proofs_are_wired_into_existing_ci_contract() -> None:
     calls = {node.func.id for node in ast.walk(tree) if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)}
     assert {"prove_worker_readiness_sources", "prove_worker_readiness_supersession"} <= calls
     assert "worker_readiness_source_proofs" in path.read_text(encoding="utf-8")
-    assert "src.warehouse.notification_execution_readiness_postgres_contract_check" in Path("Makefile").read_text()
+    # The receiver fixture already invokes readiness history. A second direct
+    # invocation regenerates time-dependent evidence under fixed request IDs.
+    makefile = Path("Makefile").read_text(encoding="utf-8")
+    receiver = "src.warehouse.controlled_receiver_rehearsal_postgres_contract_check"
+    readiness = "src.warehouse.notification_execution_readiness_postgres_contract_check"
+    assert makefile.count("-m " + receiver) == 1
+    assert "-m " + readiness not in makefile
+    parent = ast.parse(Path(receiver.replace(".", "/") + ".py").read_text(encoding="utf-8"))
+    aliases = [alias.asname or alias.name for node in ast.walk(parent)
+               if isinstance(node, ast.ImportFrom) and node.module == readiness
+               for alias in node.names if alias.name == "run_contract_check"]
+    assert len(aliases) == 1
+    assert sum(isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+               and node.func.id == aliases[0] for node in ast.walk(parent)) == 1
