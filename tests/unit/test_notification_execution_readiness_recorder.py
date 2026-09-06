@@ -27,12 +27,12 @@ def test_record_reader_rejects_non_object_and_oversized_files(
 ) -> None:
     array = tmp_path / "array.json"
     array.write_text("[]", encoding="utf-8")
-    with pytest.raises(ValidationError, match="JSON object"):
+    with pytest.raises(ValidationError, match="must be an object"):
         _read_record(array)
 
     oversized = tmp_path / "oversized.json"
     oversized.write_bytes(b" " * (MAX_RECORD_BYTES + 1))
-    with pytest.raises(ValidationError, match="exceeds 1 MB"):
+    with pytest.raises(ValidationError, match="byte limit"):
         _read_record(oversized)
 
 
