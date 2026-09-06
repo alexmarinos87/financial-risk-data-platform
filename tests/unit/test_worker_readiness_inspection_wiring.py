@@ -19,7 +19,8 @@ def test_command_reuses_real_reader_and_semantic_source_validation(tamper: bool,
     class Connection:
         closed = False
         autocommit = True
-        info = cursor.connection.info
+        def __init__(self) -> None:
+            self.info = cursor.connection.info
         def __enter__(self) -> Connection:
             return self
         def __exit__(self, *args: Any) -> None:
