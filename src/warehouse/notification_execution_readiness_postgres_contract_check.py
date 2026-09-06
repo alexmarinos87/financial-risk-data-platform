@@ -59,6 +59,10 @@ from src.warehouse.notification_execution_readiness_history_contract import (
 from src.warehouse.notification_execution_readiness_recorder import (
     record_notification_execution_readiness,
 )
+from src.warehouse.notification_worker_readiness_sources_postgres_contract import (
+    prove_worker_readiness_sources,
+    prove_worker_readiness_supersession,
+)
 from src.warehouse.postgres_loader import DEFAULT_POSTGRES_DSN
 
 CHECK_PATH = Path("sql/notification_execution_readiness_consistency_checks.sql")
@@ -469,6 +473,10 @@ def run_contract_check(dsn: str) -> dict[str, Any]:
     if _review_status(dsn, "retry") != "blocked":
         raise AssertionError("current retry readiness decision was not blocked")
 
+    source_plan, source_proofs = prove_worker_readiness_sources(
+        dsn=dsn, destination=destination, evidence=evidence, now=now,
+    )
+
     replay = record_notification_execution_readiness(
         dsn=dsn,
         record=current_record,
@@ -510,6 +518,9 @@ def run_contract_check(dsn: str) -> dict[str, Any]:
         raise AssertionError("new activation evidence did not supersede initial decision")
     if _review_status(dsn, "retry") != "decision_superseded":
         raise AssertionError("new activation evidence did not supersede retry decision")
+    source_proofs["destination_supersession"] = prove_worker_readiness_supersession(
+        dsn=dsn, plan=source_plan,
+    )
 
     update_rejected = _mutation_rejected(
         dsn,
@@ -545,6 +556,7 @@ def run_contract_check(dsn: str) -> dict[str, Any]:
     return {
         "model_version": "portfolio-risk-notification-readiness-history-contract-v1",
         "destination_id": DESTINATION_ID,
+        "worker_readiness_source_proofs": source_proofs,
         "current_initial_decision_id": current_decision["decision_id"],
         "current_retry_decision_id": retry_decision["decision_id"],
         "stale_status_proved": True,
