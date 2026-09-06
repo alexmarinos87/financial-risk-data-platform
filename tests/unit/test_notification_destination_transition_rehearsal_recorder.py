@@ -38,10 +38,10 @@ def test_transition_record_reader_rejects_oversized_or_malformed_json(
 ) -> None:
     oversized = tmp_path / "oversized.json"
     oversized.write_bytes(b"x" * (MAX_RECORD_BYTES + 1))
-    with pytest.raises(ValidationError, match="exceeds 1 MB"):
+    with pytest.raises(ValidationError, match="byte limit"):
         _read_record(oversized)
 
     malformed = tmp_path / "malformed.json"
     malformed.write_text("{not-json", encoding="utf-8")
-    with pytest.raises(ValidationError, match="could not be read"):
+    with pytest.raises(ValidationError, match="unable to read valid JSON evidence"):
         _read_record(malformed)
