@@ -5,7 +5,7 @@ import json
 import os
 import stat
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -13,7 +13,7 @@ from src.common.exceptions import ValidationError
 from src.orchestration.notification_worker_cli_parser import build_preflight_parser
 from src.orchestration.notification_worker_authority_contract import canonical_bytes, identifier, utc
 from src.orchestration.reviewed_notification_worker_preflight import (
-    MAX_BUNDLE_BYTES, build_reviewed_worker_preflight,
+    MAX_BUNDLE_BYTES, build_reviewed_worker_preflight, validate_reviewed_worker_preflight,
 )
 from src.warehouse.notification_worker_authority_history import _unique_object
 from src.warehouse.notification_worker_authority_snapshot import (
@@ -23,7 +23,7 @@ from src.warehouse.notification_worker_authority_snapshot import (
 EXIT_CODES = {"eligible_for_health_review": 0, "wait": 3, "blocked": 4}
 
 
-def load_authority_snapshot(path: Path) -> dict[str, Any]:
+def _load_document(path: Path, *, max_bytes: int) -> Any:
     """Read bounded regular-file JSON; parent directories must be trusted."""
     try:
         if path.is_symlink():
@@ -32,13 +32,47 @@ def load_authority_snapshot(path: Path) -> dict[str, Any]:
         with os.fdopen(os.open(path, flags), "rb") as handle:
             if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
                 raise ValidationError("snapshot input must be a regular file")
-            raw = handle.read(MAX_SNAPSHOT_BYTES + 1)
-        if len(raw) > MAX_SNAPSHOT_BYTES:
+            raw = handle.read(max_bytes + 1)
+        if len(raw) > max_bytes:
             raise ValidationError("snapshot input exceeds 1 MB")
         value = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_object)
-        return validate_worker_authority_snapshot(value)
+        return value
     except (OSError, TypeError, ValueError, UnicodeError, RecursionError, OverflowError):
         raise ValidationError("unable to read a valid authority snapshot") from None
+
+
+def load_authority_snapshot(path: Path) -> dict[str, Any]:
+    return validate_worker_authority_snapshot(_load_document(path, max_bytes=MAX_SNAPSHOT_BYTES))
+
+
+def validate_preflight_report(
+    value: Mapping[str, Any], *, worker_id: str, selected_transition_id: str,
+    scheduled_for: str, worker_config_path: Path, delivery_config_path: Path,
+    destination_config_path: Path,
+) -> dict[str, Any]:
+    """Rebuild retained report content, never authenticate or refresh its source."""
+    fields = {"source_mode", "database_read_performed", "runtime_permission_granted", "result"}
+    if not isinstance(value, Mapping) or set(value) != fields:
+        raise ValidationError("worker preflight report fields are invalid")
+    encoded = canonical_bytes(value)
+    if len(encoded) + 1 > MAX_BUNDLE_BYTES:
+        raise ValidationError("worker preflight report exceeds 1 MB")
+    document = json.loads(encoded)
+    mode = document["source_mode"]
+    if not isinstance(mode, str) or mode not in {"live_database_read", "retained_file", "retained_report"}:
+        raise ValidationError("worker preflight report source mode is invalid")
+    if (document["database_read_performed"] is not (mode == "live_database_read")
+            or document["runtime_permission_granted"] is not False):
+        raise ValidationError("worker preflight report side effects are invalid")
+    result = validate_reviewed_worker_preflight(
+        document["result"], worker_config_path=worker_config_path,
+        delivery_config_path=delivery_config_path, destination_config_path=destination_config_path,
+    )
+    if (result["snapshot"]["worker_id"] != identifier(worker_id, "worker_id")
+            or result["evidence"]["selected_transition_id"] != identifier(selected_transition_id, "selected_transition_id")
+            or result["evidence"]["scheduled_for"] != utc(scheduled_for, "scheduled_for").isoformat()):
+        raise ValidationError("worker preflight report differs from explicit selection")
+    return result
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -47,23 +81,33 @@ def main(argv: Sequence[str] | None = None) -> int:
         worker_id = identifier(args.worker_id, "worker_id")
         selected = identifier(args.selected_transition_id, "selected_transition_id")
         slot = utc(args.scheduled_for, "scheduled_for").isoformat()
-        if args.read_current:
-            dsn = os.environ.get("WAREHOUSE_POSTGRES_DSN", "")
-            if not dsn.strip():
-                raise ValidationError("WAREHOUSE_POSTGRES_DSN is required for explicit reading")
-            captured = read_worker_authority_snapshot(dsn=dsn, worker_id=worker_id)
+        paths = {
+            "worker_config_path": args.worker_config, "delivery_config_path": args.delivery_config,
+            "destination_config_path": args.destination_config,
+        }
+        if args.report is not None:
+            result = validate_preflight_report(
+                _load_document(args.report, max_bytes=MAX_BUNDLE_BYTES),
+                worker_id=worker_id, selected_transition_id=selected, scheduled_for=slot, **paths,
+            )
+            source_mode = "retained_report"
         else:
-            captured = load_authority_snapshot(args.snapshot)
-        captured = validate_worker_authority_snapshot(captured)
-        if captured["worker_id"] != worker_id:
-            raise ValidationError("snapshot does not match the selected worker")
-        result = build_reviewed_worker_preflight(
-            snapshot=captured, selected_transition_id=selected, scheduled_for=slot,
-            worker_config_path=args.worker_config, delivery_config_path=args.delivery_config,
-            destination_config_path=args.destination_config,
-        )
+            if args.read_current:
+                dsn = os.environ.get("WAREHOUSE_POSTGRES_DSN", "")
+                if not dsn.strip():
+                    raise ValidationError("WAREHOUSE_POSTGRES_DSN is required for explicit reading")
+                captured = read_worker_authority_snapshot(dsn=dsn, worker_id=worker_id)
+            else:
+                captured = load_authority_snapshot(args.snapshot)
+            captured = validate_worker_authority_snapshot(captured)
+            if captured["worker_id"] != worker_id:
+                raise ValidationError("snapshot does not match the selected worker")
+            result = build_reviewed_worker_preflight(
+                snapshot=captured, selected_transition_id=selected, scheduled_for=slot, **paths,
+            )
+            source_mode = "live_database_read" if args.read_current else "retained_file"
         report = {
-            "source_mode": "live_database_read" if args.read_current else "retained_file",
+            "source_mode": source_mode,
             "database_read_performed": args.read_current,
             "runtime_permission_granted": False, "result": result,
         }
