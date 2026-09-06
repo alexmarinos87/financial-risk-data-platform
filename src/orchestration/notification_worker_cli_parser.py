@@ -22,6 +22,7 @@ def build_preflight_parser() -> argparse.ArgumentParser:
     )
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--snapshot", type=Path, help="Validate retained evidence without database access")
+    source.add_argument("--report", type=Path, help="Revalidate a complete captured report offline")
     source.add_argument("--read-current", action="store_true", help="Explicitly read current PostgreSQL authority")
     parser.add_argument("--worker-id", required=True)
     parser.add_argument("--selected-transition-id", required=True)
