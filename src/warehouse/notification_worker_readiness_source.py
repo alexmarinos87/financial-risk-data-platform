@@ -9,8 +9,11 @@ from datetime import datetime, timezone
 from typing import Any
 
 from src.common.exceptions import ValidationError
+from src.warehouse.notification_worker_readiness_json import (
+    MAX_SOURCE_BYTES as MAX_SOURCE_BYTES,
+    bounded_source_bytes,
+)
 
-MAX_SOURCE_BYTES = 1_048_576
 SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,511}$")
 
 
@@ -31,15 +34,7 @@ def source_time(value: Any) -> datetime:
 
 
 def source_bytes(value: Mapping[str, Any]) -> bytes:
-    if not isinstance(value, Mapping):
-        raise ValidationError("readiness source must be an object")
-    try:
-        raw = json.dumps(dict(value), sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
-        if len(raw) > MAX_SOURCE_BYTES:
-            raise ValidationError("readiness source exceeds 1 MiB")
-        return raw
-    except (ValueError, TypeError, RecursionError, OverflowError, UnicodeError):
-        raise ValidationError("readiness source must be bounded canonical JSON") from None
+    return bounded_source_bytes(value)
 
 
 def verify_worker_readiness_record(
