@@ -7,7 +7,7 @@ import os
 import re
 import sys
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import Any, NoReturn
 
 from src.common.exceptions import ValidationError
 from src.warehouse.notification_worker_readiness_source import (
@@ -122,7 +122,7 @@ def _summary(result: Mapping[str, Any], *, worker_id: str) -> dict[str, Any]:
 
 
 class _Parser(argparse.ArgumentParser):
-    def error(self, message: str) -> None:
+    def error(self, message: str) -> NoReturn:
         # Unknown arguments may accidentally contain a DSN; do not echo values.
         self.print_usage(sys.stderr)
         self.exit(2, "Invalid readiness inspection arguments\n")
