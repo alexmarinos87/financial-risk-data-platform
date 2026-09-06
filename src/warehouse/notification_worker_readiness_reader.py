@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Mapping
 from typing import Any
 
 from src.common.exceptions import StorageError, ValidationError
@@ -93,7 +94,7 @@ def read_worker_readiness_with_cursor(cursor: Any, *, worker_id: str) -> dict[st
                 or document["plan"]["worker"]["worker_id"] != selected
                 or source_time(document["effective_at"]) > instant):
             raise StorageError("worker readiness authority integrity or selected identity differs")
-        sources = []
+        sources: list[Mapping[str, Any]] = []
         for entry in entries:
             if not isinstance(entry, dict) or set(entry) != {
                 "execution_kind", "record", "document_sha256", "review", "oversized",
