@@ -273,6 +273,8 @@ postgres-contract-check:
 		--dsn "$(LOCAL_POSTGRES_DSN)"
 	$(PYTHON) -m src.warehouse.notification_worker_authority_postgres_contract_check \
 		--dsn "$(LOCAL_POSTGRES_DSN)"
+	$(PYTHON) -m src.warehouse.notification_execution_readiness_postgres_contract_check \
+		--dsn "$(LOCAL_POSTGRES_DSN)"
 
 local-db-up:
 	docker compose up -d postgres mongo
