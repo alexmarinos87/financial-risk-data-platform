@@ -28,6 +28,40 @@ def _check_local_parameters(parameters: Mapping[str, object]) -> None:
         raise ValueError("disposable preflight proof requires an explicit loopback database host")
 
 
+def _fixture_connection_overrides(
+    parameters: Mapping[str, object], environment: Mapping[str, str],
+) -> dict[str, str | int]:
+    """Pin routing independently of libpq defaults; do not alter credential inputs."""
+    _check_local_parameters(parameters)
+    if any(environment.get(key) for key in ("PGSERVICE", "PGSERVICEFILE", "PGSYSCONFDIR")):
+        raise ValueError("disposable preflight proof does not accept service configuration")
+    host = str(parameters["host"])
+    address = parameters.get("hostaddr", "127.0.0.1" if host == "localhost" else host)
+    if host != "localhost" and address != host:
+        raise ValueError("disposable preflight proof requires matching loopback addresses")
+    port = parameters.get("port")
+    if type(port) is int:
+        port = str(port)
+    if (not isinstance(port, str) or re.fullmatch(r"[1-9][0-9]{0,4}", port) is None
+            or not 1 <= int(port) <= 65535):
+        raise ValueError("disposable preflight proof requires one explicit bounded port")
+    names: dict[str, str] = {}
+    for key in ("dbname", "user"):
+        value = parameters.get(key)
+        if not isinstance(value, str) or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]{0,62}", value) is None:
+            raise ValueError("disposable preflight proof requires explicit simple database and user names")
+        names[key] = value
+    return {**names, "host": host, "hostaddr": str(address), "port": port,
+            "connect_timeout": 5, "options": "-c statement_timeout=15000 -c lock_timeout=5000"}
+
+
+def _pinned_fixture_dsn(dsn: str) -> str:
+    """Build one explicit local target for admin and child connections, without I/O."""
+    from psycopg.conninfo import conninfo_to_dict, make_conninfo
+
+    return make_conninfo(dsn, **_fixture_connection_overrides(conninfo_to_dict(dsn), os.environ))
+
+
 def _owned_database_name(token: str) -> str:
     if not isinstance(token, str) or re.fullmatch(r"[0-9a-f]{32}", token) is None:
         raise ValueError("invalid generated fixture database identity")
@@ -42,11 +76,11 @@ def disposable_database(dsn: str, *, allow_disposable_database: bool = False) ->
         raise ValueError("a local administration DSN is required")
     import psycopg
     from psycopg import sql
-    from psycopg.conninfo import conninfo_to_dict, make_conninfo
+    from psycopg.conninfo import make_conninfo
 
-    _check_local_parameters(conninfo_to_dict(dsn))
+    pinned_dsn = _pinned_fixture_dsn(dsn)
     name = _owned_database_name(uuid4().hex)
-    with psycopg.connect(dsn, autocommit=True, connect_timeout=5) as admin:
+    with psycopg.connect(pinned_dsn, autocommit=True, connect_timeout=5) as admin:
         with admin.cursor() as cursor:
             cursor.execute("SET statement_timeout = '15s'")
             cursor.execute("SET lock_timeout = '5s'")
@@ -55,7 +89,7 @@ def disposable_database(dsn: str, *, allow_disposable_database: bool = False) ->
                 cursor.execute(sql.SQL("CREATE DATABASE {} TEMPLATE template0").format(sql.Identifier(name)))
                 created = True
                 yield make_conninfo(
-                    dsn, dbname=name, connect_timeout=5,
+                    pinned_dsn, dbname=name, connect_timeout=5,
                     options="-c statement_timeout=10000 -c lock_timeout=5000",
                 )
             finally:
