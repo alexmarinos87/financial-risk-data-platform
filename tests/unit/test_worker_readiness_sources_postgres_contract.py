@@ -82,9 +82,31 @@ def test_negative_probe_cannot_silently_pass(behavior: str, monkeypatch: pytest.
 
 
 def test_new_postgres_proofs_are_wired_into_existing_ci_contract() -> None:
+    module = "src.warehouse.notification_execution_readiness_postgres_contract_check"
     path = Path("src/warehouse/notification_execution_readiness_postgres_contract_check.py")
     tree = ast.parse(path.read_text(encoding="utf-8"))
-    calls = {node.func.id for node in ast.walk(tree) if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)}
+    run = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "run_contract_check")
+    calls = {node.func.id for node in ast.walk(run) if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)}
     assert {"prove_worker_readiness_sources", "prove_worker_readiness_supersession"} <= calls
     assert "worker_readiness_source_proofs" in path.read_text(encoding="utf-8")
-    assert "src.warehouse.notification_execution_readiness_postgres_contract_check" in Path("Makefile").read_text()
+
+    # The Make target invokes the receiver fixture, which runs readiness once.
+    # Requiring a direct readiness invocation would duplicate its fixed IDs.
+    caller = Path("src/warehouse/controlled_receiver_rehearsal_postgres_contract_check.py")
+    caller_tree = ast.parse(caller.read_text(encoding="utf-8"))
+    aliases = [alias.asname or alias.name for node in caller_tree.body
+               if isinstance(node, ast.ImportFrom) and node.module == module
+               for alias in node.names if alias.name == "run_contract_check"]
+    assert len(aliases) == 1
+    caller_run = next(node for node in caller_tree.body
+                      if isinstance(node, ast.FunctionDef) and node.name == "run_contract_check")
+    invocations = [node for node in ast.walk(caller_run)
+                   if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                   and node.func.id == aliases[0]]
+    assert len(invocations) == 1
+    assert len(invocations[0].args) == 1
+    assert isinstance(invocations[0].args[0], ast.Name) and invocations[0].args[0].id == "dsn"
+    assert "notification_execution_readiness" in caller.read_text(encoding="utf-8")
+    target = Path("Makefile").read_text().split("postgres-contract-check:", 1)[1].split("\nlocal-db-up:", 1)[0]
+    assert target.count("-m src.warehouse.controlled_receiver_rehearsal_postgres_contract_check") == 1
+    assert f"-m {module}" not in target
