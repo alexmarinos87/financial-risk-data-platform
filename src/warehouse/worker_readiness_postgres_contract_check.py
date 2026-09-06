@@ -112,8 +112,19 @@ def main() -> int:
     args = parser.parse_args()
     try:
         result = run_contract_check(args.dsn)
-    except Exception:
-        print("Worker readiness PostgreSQL source proof failed", file=sys.stderr)
+    except Exception as exc:
+        # Fixed categories only: no DSN, source document or raw exception diagnostic.
+        category = "contract_failure"
+        if isinstance(exc, StorageError) and str(exc) == "worker readiness sources require a fresh read-only statement":
+            category = "fresh_statement_required"
+        trace = exc.__traceback__
+        source_line = 0
+        while trace is not None:
+            if Path(trace.tb_frame.f_code.co_filename).name == "worker_readiness_postgres_contract_check.py":
+                source_line = trace.tb_lineno
+            trace = trace.tb_next
+        print(json.dumps({"status": "failed", "category": category,
+                          "fixture_line": source_line}), file=sys.stderr)
         return 1
     print(json.dumps(result, sort_keys=True))
     return 0
