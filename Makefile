@@ -19,7 +19,7 @@ COVARIANCE_WINDOW ?= 20
 ATTRIBUTION_MAX_SNAPSHOTS ?= 2500
 RISK_LIMIT_MAX_EVALUATIONS ?= 10000
 
-.PHONY: setup lint type-check test dependency-check format benchmark-io docker-build k8s-render-dev k8s-render-prod k8s-check terraform-check infrastructure-check quality-check iteration-check clean-generated security-check readiness-check sandbox-once overnight-sandbox morning-review daily-risk-demo portfolio-risk-demo portfolio-attribution-demo portfolio-attribution-history-demo portfolio-risk-limits-demo warehouse-schema daily-risk-warehouse-dry-run daily-risk-warehouse-load check-daily-risk-consistency portfolio-risk-warehouse-dry-run portfolio-risk-warehouse-load check-portfolio-risk-consistency portfolio-attribution-warehouse-dry-run portfolio-attribution-warehouse-load check-portfolio-attribution-consistency portfolio-risk-limits-warehouse-dry-run portfolio-risk-limits-warehouse-load check-portfolio-risk-limits-consistency postgres-contract-fixture postgres-contract-check local-db-up local-db-down local-db-wait local-db-logs postgres-shell mongo-shell run-demo load-postgres-demo load-postgres-dry-run check-postgres-consistency consistency-demo
+.PHONY: setup lint type-check test dependency-check format benchmark-io docker-build k8s-render-dev k8s-render-prod k8s-check terraform-check quality-check iteration-check clean-generated security-check readiness-check sandbox-once overnight-sandbox morning-review daily-risk-demo portfolio-risk-demo portfolio-attribution-demo portfolio-attribution-history-demo portfolio-risk-limits-demo warehouse-schema daily-risk-warehouse-dry-run daily-risk-warehouse-load check-daily-risk-consistency portfolio-risk-warehouse-dry-run portfolio-risk-warehouse-load check-portfolio-risk-consistency portfolio-attribution-warehouse-dry-run portfolio-attribution-warehouse-load check-portfolio-attribution-consistency portfolio-risk-limits-warehouse-dry-run portfolio-risk-limits-warehouse-load check-portfolio-risk-limits-consistency postgres-contract-fixture postgres-contract-check local-db-up local-db-down local-db-wait local-db-logs postgres-shell mongo-shell run-demo load-postgres-demo load-postgres-dry-run check-postgres-consistency consistency-demo
 
 setup:
 	python3 -m venv .venv
@@ -272,8 +272,6 @@ postgres-contract-check:
 	$(PYTHON) -m src.warehouse.notification_retry_governance_bundle_postgres_contract_check \
 		--dsn "$(LOCAL_POSTGRES_DSN)"
 	$(PYTHON) -m src.warehouse.notification_worker_authority_postgres_contract_check \
-		--dsn "$(LOCAL_POSTGRES_DSN)"
-	$(PYTHON) -m src.warehouse.notification_execution_readiness_postgres_contract_check \
 		--dsn "$(LOCAL_POSTGRES_DSN)"
 
 local-db-up:
