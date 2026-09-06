@@ -1,7 +1,6 @@
 """Validation-first, read-only diagnostics for a captured worker authority slot."""
 from __future__ import annotations
 
-import argparse
 import json
 import os
 import stat
@@ -11,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from src.common.exceptions import ValidationError
+from src.orchestration.notification_worker_cli_parser import build_preflight_parser
 from src.orchestration.notification_worker_authority_contract import canonical_bytes, identifier, utc
 from src.orchestration.reviewed_notification_worker_preflight import (
     MAX_BUNDLE_BYTES, build_reviewed_worker_preflight,
@@ -42,17 +42,7 @@ def load_authority_snapshot(path: Path) -> dict[str, Any]:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
-    source = parser.add_mutually_exclusive_group(required=True)
-    source.add_argument("--snapshot", type=Path, help="Validate a retained snapshot without database access")
-    source.add_argument("--read-current", action="store_true", help="Explicitly read current PostgreSQL authority")
-    parser.add_argument("--worker-id", required=True)
-    parser.add_argument("--selected-transition-id", required=True)
-    parser.add_argument("--scheduled-for", required=True)
-    parser.add_argument("--worker-config", type=Path, default=Path("config/notification_workers.yaml"))
-    parser.add_argument("--delivery-config", type=Path, default=Path("config/notification_delivery.yaml"))
-    parser.add_argument("--destination-config", type=Path, default=Path("config/notification_destinations.yaml"))
-    args = parser.parse_args(argv)
+    args = build_preflight_parser().parse_args(argv)
     try:
         worker_id = identifier(args.worker_id, "worker_id")
         selected = identifier(args.selected_transition_id, "selected_transition_id")
