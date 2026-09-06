@@ -102,7 +102,7 @@ def test_only_successfully_created_database_is_dropped(
     monkeypatch.setattr(driver, "connect", lambda *args, **kwargs: Connection(), raising=False)
     monkeypatch.setattr(driver, "sql", SimpleNamespace(SQL=str, Identifier=lambda name: f'"{name}"'), raising=False)
     conninfo = ModuleType("psycopg.conninfo")
-    monkeypatch.setattr(conninfo, "conninfo_to_dict", lambda dsn: {"host": "localhost"}, raising=False)
+    monkeypatch.setattr(conninfo, "conninfo_to_dict", lambda dsn: {"host": "localhost", "port": "5433", "dbname": "postgres", "user": "fixture"}, raising=False)
     monkeypatch.setattr(conninfo, "make_conninfo", lambda dsn, **kwargs: kwargs["dbname"], raising=False)
     monkeypatch.setitem(sys.modules, "psycopg", driver)
     monkeypatch.setitem(sys.modules, "psycopg.conninfo", conninfo)
