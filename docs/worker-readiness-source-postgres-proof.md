@@ -6,14 +6,17 @@ Primary arc42 block: `warehouse`. Goal #175 follows #173 and #174.
 
 The accepted `notification_execution_readiness_postgres_contract_check.py`
 fixture now invokes `notification_worker_readiness_sources_postgres_contract.py`
-before and after its existing destination-supersession step. Two added lines in
-`make postgres-contract-check` explicitly execute this extended fixture. No
-pinned Actions workflow, target name, database schema or application setting
-changes.
+before and after its existing destination-supersession step. The established
+`make postgres-contract-check` target invokes the controlled-receiver fixture,
+which calls the readiness fixture once and embeds its report. The wiring test
+checks this complete call chain, not a nonexistent direct Makefile invocation.
+The final Makefile is unchanged; no pinned Actions, schema or setting changes.
 
-The initial wiring regression test caught the missing Makefile invocation. Its
-assertion was retained and the invocation was added, rather than weakening the
-test or treating a passing unrelated PostgreSQL suite as proof of this query.
+An initial test incorrectly expected a direct Makefile entry. A trial direct
+invocation duplicated the existing nested run and triggered the expected
+request-ID conflict. The duplicate was removed. The corrected test checks the
+import alias, actual nested call, Make entry point and absence of a duplicate.
+No product validation, corruption probe or database guard was removed.
 
 The extension constructs real worker plans and readiness records using the
 accepted builders, current fixture destination evidence and actual retry-policy
@@ -67,10 +70,11 @@ validation workflow:
 make postgres-contract-check
 ```
 
-Inspect the readiness fixture's `worker_readiness_source_proofs` JSON object;
-each proof must be true. No proof result is claimed merely because SQL parsed or
-unit tests used a fake cursor. The proof helper has no standalone CLI and
-introduces no operational recording, scheduler, webhook or cloud activation.
+Inspect `notification_execution_readiness.worker_readiness_source_proofs` in
+the controlled-receiver fixture report; every proof must be true. No result is
+claimed merely because SQL parsed or unit tests used a fake cursor. The proof
+helper has no standalone CLI and introduces no operational recording, scheduler,
+webhook or cloud activation.
 
 Source authenticity, current worker authority, immutable configuration
 provenance, complete health and under-lock execution remain separate concerns.
