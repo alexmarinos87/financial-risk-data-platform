@@ -6,9 +6,14 @@ Primary arc42 block: `warehouse`. Goal #175 follows #173 and #174.
 
 The accepted `notification_execution_readiness_postgres_contract_check.py`
 fixture now invokes `notification_worker_readiness_sources_postgres_contract.py`
-before and after its existing destination-supersession step. The existing
-`make postgres-contract-check` target already executes this fixture. No pinned
-Actions workflow, Make target, database schema or application setting changes.
+before and after its existing destination-supersession step. Two added lines in
+`make postgres-contract-check` explicitly execute this extended fixture. No
+pinned Actions workflow, target name, database schema or application setting
+changes.
+
+The initial wiring regression test caught the missing Makefile invocation. Its
+assertion was retained and the invocation was added, rather than weakening the
+test or treating a passing unrelated PostgreSQL suite as proof of this query.
 
 The extension constructs real worker plans and readiness records using the
 accepted builders, current fixture destination evidence and actual retry-policy
