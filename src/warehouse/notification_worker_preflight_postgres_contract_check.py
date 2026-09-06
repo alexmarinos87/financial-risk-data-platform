@@ -17,6 +17,26 @@ from uuid import uuid4
 
 DATABASE_PREFIX = "worker_preflight_contract_"
 LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+OPERATOR_CHECKS = frozenset({
+    "committed_active_public_read", "public_reader_write_rejected", "live_due_operator_path",
+    "committed_stop_blocks_old_selection", "historical_replay_does_not_promote",
+    "offline_capture_is_not_current_authority", "missing_worker_clock",
+    "only_two_intended_authority_records",
+})
+FAILURE_CHECKS = frozenset({
+    "early_failure_fixture_dropped", "committed_failure_fixture_dropped",
+    "explicit_target_overrides_environment",
+})
+FINAL_CHECKS = OPERATOR_CHECKS | FAILURE_CHECKS | {"owned_fixture_database_dropped"}
+
+
+def _verified_checks(value: Any, expected: frozenset[str]) -> dict[str, bool]:
+    """Never let absent, extra or truthy-but-not-true proof flags count as success."""
+    if not isinstance(value, Mapping) or set(value) != expected:
+        raise AssertionError("worker fixture proof groups are incomplete or unexpected")
+    if any(value[key] is not True for key in expected):
+        raise AssertionError("worker fixture proof groups did not all pass")
+    return {key: True for key in sorted(expected)}
 
 
 def _check_local_parameters(parameters: Mapping[str, object]) -> None:
@@ -219,12 +239,62 @@ def _exercise(dsn: str, directory: Path) -> dict[str, bool]:
     return checks
 
 
+class _ExpectedFixtureFailure(Exception):
+    """Private sentinel: provider, validation and cleanup failures must never match."""
+
+
+def _prove_failure_cleanup(dsn: str) -> dict[str, bool]:
+    """Inject two body failures; confirm cleanup using the real PostgreSQL catalog."""
+    import psycopg
+    from psycopg.conninfo import conninfo_to_dict
+
+    pinned_dsn = _pinned_fixture_dsn(dsn)
+    checks: dict[str, bool] = {}
+    # Standalone, single-threaded test only. Invalid routing defaults cannot resolve
+    # to a remote address if pinning regresses. No real credentials are supplied.
+    with patch.dict(os.environ, {
+        "PGHOST": "unused.invalid", "PGHOSTADDR": "invalid-hostaddr",
+        "PGPORT": "invalid-port", "PGDATABASE": "unused_fixture_database",
+        "PGUSER": "unused_fixture_user",
+    }):
+        for committed, key in ((False, "early_failure_fixture_dropped"),
+                               (True, "committed_failure_fixture_dropped")):
+            name = None
+            try:
+                with disposable_database(pinned_dsn, allow_disposable_database=True) as child_dsn:
+                    name = conninfo_to_dict(child_dsn)["dbname"]
+                    if committed:
+                        with psycopg.connect(child_dsn) as connection, connection.cursor() as cursor:
+                            cursor.execute("CREATE TABLE fixture_failure_marker (value INTEGER NOT NULL)")
+                            cursor.execute("INSERT INTO fixture_failure_marker VALUES (1)")
+                        # Reopen after the successful context exit to prove actual commit.
+                        with psycopg.connect(child_dsn) as connection, connection.cursor() as cursor:
+                            cursor.execute("SELECT current_database(), COUNT(*) FROM fixture_failure_marker")
+                            if cursor.fetchone() != (name, 1):
+                                raise AssertionError("failure fixture marker was not committed in its owned database")
+                    raise _ExpectedFixtureFailure()
+            except _ExpectedFixtureFailure:
+                if name is None:
+                    raise AssertionError("failure probe did not enter its owned fixture") from None
+            else:
+                raise AssertionError("expected fixture failure did not propagate")
+            with psycopg.connect(pinned_dsn, autocommit=True) as admin, admin.cursor() as cursor:
+                cursor.execute("SELECT 1 FROM pg_database WHERE datname = %s", (name,))
+                if cursor.fetchone() is not None:
+                    raise AssertionError("failed fixture remains in the database catalog")
+            checks[key] = True
+    checks["explicit_target_overrides_environment"] = True
+    return checks
+
+
 def run_contract_check(dsn: str, *, allow_disposable_database: bool = False) -> dict[str, Any]:
     with disposable_database(dsn, allow_disposable_database=allow_disposable_database) as fixture_dsn:
         with TemporaryDirectory(prefix="worker-preflight-integration-") as temporary:
-            checks = _exercise(fixture_dsn, Path(temporary))
+            checks = _verified_checks(_exercise(fixture_dsn, Path(temporary)), OPERATOR_CHECKS)
     checks["owned_fixture_database_dropped"] = True
-    return {"model_version": "worker-preflight-operator-postgres-contract-v1", "checks": checks,
+    checks.update(_verified_checks(_prove_failure_cleanup(dsn), FAILURE_CHECKS))
+    checks = _verified_checks(checks, FINAL_CHECKS)
+    return {"model_version": "worker-preflight-operator-postgres-contract-v2", "checks": checks,
             "runtime_permission_granted": False, "external_request_performed": False,
             "scheduler_mutated": False}
 
