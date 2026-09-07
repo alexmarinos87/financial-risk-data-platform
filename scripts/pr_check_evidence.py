@@ -118,6 +118,18 @@ def summarize_checks(*, head_sha: str, check_pages: Any, status_pages: Any) -> d
         entries.append({"kind": "commit_status", "id": row["id"], "app_id": None,
                         "name": name, "state": state, "conclusion": None,
                         "outcome": "passed" if state == "success" else "incomplete" if state == "pending" else "failed"})
+    # The combined endpoint summarizes all contexts, not just a pagination slice.
+    combined_status = (
+        "failure" if any(row["state"] in {"error", "failure"} for row in statuses)
+        else "pending" if not statuses or any(row["state"] == "pending" for row in statuses)
+        else "success"
+    )
+    for page in status_pages:
+        aggregate = page.get("state")
+        if not isinstance(aggregate, str) or aggregate not in {"success", "pending", "failure"}:
+            raise EvidenceError("invalid combined commit-status state")
+        if aggregate != combined_status:
+            raise EvidenceError("combined commit-status state contradicts its contexts")
     missing = [{"app_id": app_id, "name": name}
                for app_id, name in sorted(REQUIRED_CHECKS - identities.keys())]
     ambiguous = any(count > 1 for count in identities.values()) or any(count > 1 for count in contexts.values())
@@ -128,6 +140,7 @@ def summarize_checks(*, head_sha: str, check_pages: Any, status_pages: Any) -> d
         "head_sha": head, "outcome": outcome, "all_reported_checks_passed": outcome == "passed",
         "entries": sorted(entries, key=lambda row: (row["kind"], row["app_id"] or 0, row["name"], row["id"])),
         "missing_required_checks": missing, "ambiguous_latest_identities": ambiguous,
+        "combined_status_state": combined_status,
         "evidence_scope": "captured_exact_head", "branch_rules_verified": False,
         "engineer_acceptance": "pending", "merge_authorized": False,
     }

@@ -15,7 +15,7 @@ def pages() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     checks = [{"id": i, "name": name, "app": {"id": app}, "head_sha": HEAD,
                "status": "completed", "conclusion": "success"}
               for i, (app, name) in enumerate(sorted(evidence.REQUIRED_CHECKS), 1)]
-    return [{"total_count": len(checks), "check_runs": checks}], [{"sha": HEAD, "total_count": 0, "statuses": []}]
+    return [{"total_count": len(checks), "check_runs": checks}], [{"sha": HEAD, "state": "pending", "total_count": 0, "statuses": []}]
 
 
 def summarize(checks: Any, statuses: Any) -> dict[str, Any]:
@@ -78,7 +78,7 @@ def test_extra_failing_app_is_not_ignored() -> None:
 @pytest.mark.parametrize("state", ["success", "failure", "error", "pending"])
 def test_commit_statuses_are_reconciled_separately(state: str) -> None:
     checks, statuses = pages()
-    statuses[0].update(total_count=1, statuses=[{"id": 91, "context": "external-audit", "state": state}])
+    statuses[0].update(state="failure" if state == "error" else state, total_count=1, statuses=[{"id": 91, "context": "external-audit", "state": state}])
     result = summarize(checks, statuses)
     assert result["outcome"] == ("passed" if state == "success" else "incomplete" if state == "pending" else "failed")
 
@@ -131,7 +131,7 @@ def test_duplicate_latest_identities_are_ambiguous_not_guessed(kind: str) -> Non
         checks[0]["check_runs"].append({**checks[0]["check_runs"][0], "id": 99})
         checks[0]["total_count"] += 1
     else:
-        statuses[0].update(total_count=2, statuses=[{"id": i, "context": "same", "state": "success"} for i in (98, 99)])
+        statuses[0].update(state="success", total_count=2, statuses=[{"id": i, "context": "same", "state": "success"} for i in (98, 99)])
     result = summarize(checks, statuses)
     assert result["ambiguous_latest_identities"] is True
     assert result["outcome"] == "incomplete"

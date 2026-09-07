@@ -52,7 +52,7 @@ class Reader:
                     "behind_by": self.behind}
         sha = suffix.split("/")[1]
         if "/status?" in suffix:
-            return {"sha": sha, "total_count": 0, "statuses": []}
+            return {"sha": sha, "state": "pending", "total_count": 0, "statuses": []}
         rows = [{"id": i, "head_sha": sha, "name": name, "app": {"id": app},
                  "status": "completed", "conclusion": "failure" if self.failure == int(sha, 16) and app == 46505 else "success"}
                 for i, (app, name) in enumerate(sorted(REQUIRED_CHECKS), 1)]
