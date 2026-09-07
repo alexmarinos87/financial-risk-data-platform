@@ -59,6 +59,22 @@ def _check_depth(raw: bytes) -> None:
             depth -= 1
 
 
+def _check_unicode(value: Any) -> None:
+    # JSON escape decoding can introduce surrogate code points even when every
+    # input byte was valid UTF-8. Valid escaped pairs decode to one scalar.
+    # This traversal is bounded by the pre-decoding byte and depth checks.
+    if isinstance(value, str):
+        if any(0xD800 <= ord(character) <= 0xDFFF for character in value):
+            raise ValidationError("JSON evidence contains an unpaired Unicode surrogate")
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            _check_unicode(key)
+            _check_unicode(item)
+    elif isinstance(value, list):
+        for item in value:
+            _check_unicode(item)
+
+
 def _read_regular_file(path: Path, maximum: int) -> bytes:
     before = path.lstat()
     if stat.S_ISLNK(before.st_mode):
@@ -107,6 +123,7 @@ def load_bounded_json_object(path: Path, *, max_bytes: int = MAX_JSON_BYTES) -> 
                            parse_constant=_reject_constant, parse_float=_finite_float)
         if not isinstance(value, dict):
             raise ValidationError("JSON evidence must be an object")
+        _check_unicode(value)
         return value
     except (OSError, ValueError, RecursionError, OverflowError):
         # Never retain filenames, input fragments or parser/provider diagnostics.
