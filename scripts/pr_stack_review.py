@@ -103,6 +103,15 @@ def _pages(read: ReadJSON, endpoint: str, key: str) -> list[Mapping[str, Any]]:
     raise EvidenceError("GitHub pagination exceeded the page limit")
 
 
+def _observe_checks(read: ReadJSON, head: str) -> dict[str, Any]:
+    """Return detached evidence for one complete observation of an exact head."""
+    return summarize_checks(
+        head_sha=head,
+        check_pages=_pages(read, f"commits/{head}/check-runs?filter=latest", "check_runs"),
+        status_pages=_pages(read, f"commits/{head}/status", "statuses"),
+    )
+
+
 def _pr_identity(raw: Mapping[str, Any], repository: str, number: int) -> dict[str, Any]:
     try:
         if (raw["number"] != number or type(raw["number"]) is not int
@@ -141,10 +150,7 @@ def collect_stack(repository: str, numbers: Sequence[int], read: ReadJSON) -> di
     for number in sorted(numbers):
         identity = _pr_identity(read(f"pulls/{number}"), repository, number)
         head, base = identity["head_sha"], identity["base_sha"]
-        checks = summarize_checks(
-            head_sha=head, check_pages=_pages(read, f"commits/{head}/check-runs?filter=latest", "check_runs"),
-            status_pages=_pages(read, f"commits/{head}/status", "statuses"),
-        )
+        checks = _observe_checks(read, head)
         comparison = read(f"compare/{base}...{head}?per_page=1")
         try:
             behind = comparison["behind_by"]
@@ -155,6 +161,12 @@ def collect_stack(repository: str, numbers: Sequence[int], read: ReadJSON) -> di
         except (KeyError, TypeError):
             raise EvidenceError("comparison evidence is incomplete") from None
         candidates[number] = {**identity, "checks": checks, "behind_base_by": behind}
+    # A check can change without a new commit. Compare complete projected
+    # evidence twice, not just aggregate success or branch reference identities.
+    for candidate in candidates.values():
+        if _observe_checks(read, candidate["head_sha"]) != candidate["checks"]:
+            raise EvidenceError("PR check evidence changed during collection")
+    # Finish all reference checks after the last inventory reobservation.
     # Re-read every PR after all collection, not just immediately after its checks.
     for number, candidate in candidates.items():
         final = _pr_identity(read(f"pulls/{number}"), repository, number)
@@ -203,6 +215,8 @@ def collect_stack(repository: str, numbers: Sequence[int], read: ReadJSON) -> di
     return {"model_version": "pr-stack-review-v1", "repository": repository, "main_sha": main_sha,
             "collection_started_at": started, "collection_finished_at": datetime.now(timezone.utc).isoformat(),
             "collection_consistency": "ref_stable_non_atomic", "review_order": order,
+            "check_inventory_observations": 2,
+            "check_inventory_consistency": "two_equal_observations_non_atomic",
             "candidates": [candidates[n] for n in order],
             "all_technical_checks_passed": all(not row["technical_blockers"] for row in candidates.values()),
             "independent_review_verified": False, "tested_merge_tree_verified": False,
