@@ -54,6 +54,7 @@ For focused commands and a five-minute walkthrough, see [`docs/demo-script.md`](
 
 | Topic | Starting point |
 | --- | --- |
+| Recruiter-facing case study | [`PORTFOLIO_CASE_STUDY.md`](PORTFOLIO_CASE_STUDY.md) |
 | End-to-end architecture | [`docs/architecture.md`](docs/architecture.md) |
 | Daily market-risk path | [`docs/daily-risk-pipeline.md`](docs/daily-risk-pipeline.md) |
 | Portfolio returns and risk | [`docs/portfolio-risk.md`](docs/portfolio-risk.md) |
