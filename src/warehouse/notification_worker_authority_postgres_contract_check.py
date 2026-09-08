@@ -24,6 +24,8 @@ from src.warehouse.notification_worker_authority_history import (
     record_worker_authority_with_cursor,
 )
 
+from src.warehouse.worker_attempt_attribution_postgres_contract_check import check_worker_attempt_attribution_contract
+
 
 def _plan(directory: Path, worker_id: str, planned_at: datetime) -> dict[str, Any]:
     configs = {
@@ -161,6 +163,7 @@ def run_contract_check(dsn: str) -> dict[str, Any]:
                     _reject(connection, mutate, "append-only")
                 _reject(connection, lambda: cursor.execute("TRUNCATE risk_platform.notification_worker_authority_history"), "append-only")
                 results["update_delete_truncate_rejected"] = True
+                results.update(check_worker_attempt_attribution_contract(connection, cursor, first))
                 cursor.execute("SELECT clock_timestamp()")
                 clock_row = cursor.fetchone()
                 if clock_row is None:
