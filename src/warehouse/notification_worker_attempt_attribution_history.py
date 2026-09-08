@@ -88,7 +88,7 @@ def record_worker_attempt_attribution_with_cursor(
     """
     document = validate_worker_attempt_attribution(record)
     connection = getattr(cursor, "connection", None)
-    if getattr(connection, "autocommit", None) is not False:
+    if connection is None or getattr(connection, "autocommit", None) is not False:
         raise ValidationError("attribution recording requires a caller-owned transaction")
     cursor.execute("SELECT current_setting('transaction_isolation')")
     if cursor.fetchone() != ("read committed",):

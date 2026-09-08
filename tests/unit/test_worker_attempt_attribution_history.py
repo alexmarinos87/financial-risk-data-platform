@@ -249,3 +249,17 @@ def test_real_postgres_proof_is_wired_once_after_original_mutation_checks() -> N
     proof = Path("src/warehouse/worker_attempt_attribution_postgres_contract_check.py").read_text()
     assert "connection.transaction(force_rollback=True)" in proof
     assert "set(checks) != EXPECTED_CHECKS" in proof
+
+
+@pytest.mark.parametrize("returned", [("target-event",), None, ("other-event",)])
+def test_fixture_event_copy_selects_exact_seed_and_rejects_missing_materialization(returned: Any) -> None:
+    from src.warehouse.worker_attempt_attribution_postgres_contract_check import _copy_fixture_event
+    cursor = Connection([returned]).handle
+    if returned == ("target-event",):
+        _copy_fixture_event(cursor, event_id="target-event", seed_event_id="selected-seed")
+    else:
+        with pytest.raises(AssertionError, match="not materialized"):
+            _copy_fixture_event(cursor, event_id="target-event", seed_event_id="selected-seed")
+    assert "WHERE o.event_id = %s" in cursor.calls[0][0]
+    assert cursor.calls[0][1] == ("target-event", "target-event", "selected-seed")
+    assert cursor.calls[1][1] == ("target-event",)

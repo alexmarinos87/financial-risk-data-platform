@@ -74,7 +74,11 @@ and recording. The preceding observer's write-order rules remain unchanged.
 The existing authority PostgreSQL fixture invokes the new proof after its own
 mutation probes. The proof applies the new SQL and creates all synthetic outbox,
 context, attempt and attribution rows inside a forced-rollback savepoint. It
-checks restoration of schema presence and removal of synthetic outbox rows.
+explicitly seeds an evaluation/outbox event using the established fixture helper
+and retained portfolio-attribution data, then copies that exact seed and checks
+each event exists before recording attempts. It does not assume an earlier test
+left an outbox row behind. Schema presence, all synthetic outbox rows and the
+seed evaluation are checked after rollback.
 The existing surrounding authority fixture and disposable-service teardown are
 preserved. The supplied database must be the established disposable CI service,
 not production. No persistent schema installation is performed by the proof.
