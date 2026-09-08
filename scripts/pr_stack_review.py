@@ -9,6 +9,7 @@ import sys
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timezone
 from typing import Any
+from urllib.error import HTTPError
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 from scripts.pr_check_evidence import (
@@ -34,8 +35,12 @@ def repository_name(value: Any) -> str:
 
 
 class NoRedirects(HTTPRedirectHandler):
-    def redirect_request(self, *args: Any, **kwargs: Any) -> None:
-        raise EvidenceError("GitHub redirects are not accepted")
+    def redirect_request(self, req: Any, fp: Any = None, *args: Any, **kwargs: Any) -> None:
+        try:
+            if fp is not None:
+                fp.close()
+        finally:
+            raise EvidenceError("GitHub redirects are not accepted") from None
 
 
 def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -80,6 +85,12 @@ class GitHubReadOnly:
             if not isinstance(value, dict):
                 raise EvidenceError("GitHub response is not an object")
             return value
+        except HTTPError as error:
+            # opener.open can raise before the response context is entered.
+            try:
+                error.close()
+            finally:
+                raise EvidenceError("unable to obtain bounded GitHub evidence") from None
         except Exception:
             raise EvidenceError("unable to obtain bounded GitHub evidence") from None
 
