@@ -30,6 +30,7 @@ lint:
 
 type-check:
 	$(PYTHON) -m mypy --package src
+	$(PYTHON) -m mypy --module scripts.pr_check_evidence --module scripts.pr_stack_review
 
 format:
 	$(PYTHON) -m ruff check . --fix
