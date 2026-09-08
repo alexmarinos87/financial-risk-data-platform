@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timezone
 from typing import Any, TypeAlias
 
+import numpy as np
 import pandas as pd
 from pydantic import ValidationError as PydanticValidationError
 
@@ -113,6 +114,11 @@ def _in_output_range(event: MarketEvent, start_date: date | None) -> bool:
     return start_date is None or event.ts_event.astimezone(timezone.utc).date() >= start_date
 
 
+def _require_finite_metrics(values: pd.Series, label: str) -> None:
+    if not all(math.isfinite(float(value)) for value in values):
+        raise ValidationError(f"{label} must contain only finite calculated values")
+
+
 def build_daily_risk_outputs(
     events: Iterable[EventInput],
     *,
@@ -153,16 +159,25 @@ def build_daily_risk_outputs(
             continue
 
         prices = pd.Series([event.price for event in group], dtype="float64")
-        returns = prices.pct_change(fill_method=None)
-        rolling_volatility = (
-            returns.rolling(
-                window=volatility_window,
-                min_periods=volatility_window,
-            ).std()
-            * math.sqrt(TRADING_DAYS_PER_YEAR)
-        )
-        drawdown = prices / prices.cummax() - 1.0
-        maximum_drawdown = drawdown.cummin()
+        with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+            returns = prices.pct_change(fill_method=None)
+            # Only the first return is an expected missing observation.
+            _require_finite_metrics(returns.iloc[1:], "Daily returns")
+            rolling_volatility = (
+                returns.rolling(
+                    window=volatility_window,
+                    min_periods=volatility_window,
+                ).std()
+                * math.sqrt(TRADING_DAYS_PER_YEAR)
+            )
+            # Warm-up is represented by None below, not by accepting a NaN
+            # after enough observations have accumulated.
+            _require_finite_metrics(
+                rolling_volatility.iloc[volatility_window:], "Daily volatility"
+            )
+            drawdown = prices / prices.cummax() - 1.0
+            _require_finite_metrics(drawdown, "Daily drawdown")
+            maximum_drawdown = drawdown.cummin()
 
         for index in range(1, len(group)):
             current = group[index]
@@ -217,11 +232,12 @@ def build_daily_risk_outputs(
             var_start = max(1, index - var_window + 1)
             var_slice = returns.iloc[var_start : index + 1].dropna()
             var_inputs = group[var_start - 1 : index + 1]
-            var_loss = (
-                max(0.0, -value_at_risk(var_slice, confidence=confidence))
-                if len(var_slice) >= 2
-                else None
-            )
+            var_loss: float | None = None
+            if len(var_slice) >= 2:
+                quantile = value_at_risk(var_slice, confidence=confidence)
+                if not math.isfinite(quantile):
+                    raise ValidationError("Daily risk quantile is not finite")
+                var_loss = max(0.0, -quantile)
             summary_inputs = group[: index + 1]
             full_history_ready = index >= max(volatility_window, var_window)
             summary_records.append(
