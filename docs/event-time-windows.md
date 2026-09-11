@@ -31,10 +31,35 @@ alignment must explicitly use a separate calendar/session policy instead.
 Run the boundary and timezone regressions with:
 
 ```bash
-python -m pytest -q tests/unit/test_windowing.py
+python -m pytest -q tests/unit/test_windowing.py \
+  tests/unit/test_windowing_timestamp_compatibility.py
 ```
 
 The tests cover fractional pre-epoch values, non-whole-hour timezone offsets,
 London clock changes, multi-hour/day intervals, containment, alignment,
 idempotence and invalid inputs. No external data, provider or infrastructure is
 required; clock-change cases use the runtime's timezone database.
+
+
+## Timestamp representation compatibility
+
+Window assignment uses built-in `datetime` and `timedelta` arithmetic even when
+its input is a pandas `Timestamp`. The same instant represented in seconds,
+milliseconds, microseconds or nanoseconds must not change the result or impose a
+representation-specific duration ceiling. For example, a 200,000,000-minute
+interval fits Python's duration range but exceeds a nanosecond timedelta's range;
+this is an arithmetic-boundary regression case, not a recommended risk window.
+
+The conversion retains the calendar fields, timezone and daylight-saving `fold`.
+A submicrosecond remainder cannot affect an integer-minute window: every UTC
+boundary is microsecond-aligned, and truncating that positive remainder never
+crosses such a boundary, including before 1970. No float timestamp conversion or
+rounding is used. This is window assignment only, not source-event timestamp
+serialization. The input is not mutated and the result is a built-in `datetime`.
+
+Missing pandas timestamps (`NaT`) raise the fixed public `ValidationError`
+instead of exposing a backend arithmetic error. Durations or resulting UTC/local
+boundaries genuinely outside Python's representable range remain rejected.
+The tests cover representation parity, exact nanosecond edges, both London folds,
+the supported datetime endpoints and actual boundary underflow. The normal
+five-minute pipeline policy, ingestion contract and dependencies are unchanged.
