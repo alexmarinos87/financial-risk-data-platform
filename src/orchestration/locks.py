@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from contextlib import ExitStack
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -37,40 +38,42 @@ def acquire_partition_locks(
     stale_after_seconds: int | None = None,
 ) -> list[Path]:
     lock_paths: list[Path] = []
-    for partition in sorted(set(partitions)):
-        path = _lock_path(base_dir, partition)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        payload = json.dumps(
-            {
-                "owner": owner,
-                "partition": partition,
-                "acquired_at": datetime.now(timezone.utc).isoformat(),
-            }
-        ).encode("utf-8")
-        try:
-            fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        except FileExistsError as exc:
-            if _is_stale_lock(path, stale_after_seconds):
-                path.unlink(missing_ok=True)
+    with ExitStack() as rollback:
+        for partition in sorted(set(partitions)):
+            path = _lock_path(base_dir, partition)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            payload = json.dumps(
+                {
+                    "owner": owner,
+                    "partition": partition,
+                    "acquired_at": datetime.now(timezone.utc).isoformat(),
+                }
+            ).encode("utf-8")
+            try:
                 fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            else:
-                for lock_path in lock_paths:
-                    lock_path.unlink(missing_ok=True)
-                raise OverlapError(
-                    f"Partition '{partition}' is already locked; live and backfill overlap is blocked."
-                ) from exc
+            except FileExistsError as exc:
+                if _is_stale_lock(path, stale_after_seconds):
+                    path.unlink(missing_ok=True)
+                    fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                else:
+                    raise OverlapError(
+                        f"Partition '{partition}' is already locked; "
+                        "live and backfill overlap is blocked."
+                    ) from exc
 
-        try:
-            handle = os.fdopen(fd, "wb")
-        except Exception:
-            for lock_path in lock_paths:
-                lock_path.unlink(missing_ok=True)
-            raise
+            # Register only after exclusive creation, but before wrapping or
+            # writing: even an empty/partially written lock needs rollback.
+            rollback.callback(path.unlink, missing_ok=True)
+            try:
+                # Keep one explicit descriptor owner even if wrapping fails.
+                with os.fdopen(fd, "wb", closefd=False) as handle:
+                    handle.write(payload)
+            finally:
+                os.close(fd)
+            lock_paths.append(path)
 
-        with handle:
-            handle.write(payload)
-        lock_paths.append(path)
-
+        # Successful acquisition transfers release responsibility to the caller.
+        rollback.pop_all()
     return lock_paths
 
 
