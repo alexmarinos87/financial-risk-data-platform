@@ -28,22 +28,29 @@ def value_at_risk(returns: pd.Series, confidence: float = 0.95) -> float:
         raise ValidationError("Risk observations must be a pandas Series")
     if returns.empty:
         return 0.0
-    observations = returns.dropna()
-    if observations.empty:
-        raise ValidationError("Risk history contains no observed returns")
-    for value in observations:
+    # Inspect raw scalars: pandas 2 can classify infinity as missing under a
+    # process-wide option. Filtering first could turn invalid history into zero.
+    observations: list[float] = []
+    for value in returns:
+        if value is None or value is pd.NA or value is pd.NaT:
+            continue
         if isinstance(value, bool) or not isinstance(value, Real):
             raise ValidationError("Risk observations must be finite real numbers")
         try:
-            finite = math.isfinite(float(value))
-        except (ValueError, OverflowError):
-            finite = False
-        if not finite:
+            numeric_value = float(value)
+        except (TypeError, ValueError, OverflowError):
+            raise ValidationError("Risk observations must be finite real numbers") from None
+        if math.isnan(numeric_value):
+            continue
+        if not math.isfinite(numeric_value):
             raise ValidationError("Risk observations must be finite real numbers")
+        observations.append(numeric_value)
+    if not observations:
+        raise ValidationError("Risk history contains no observed returns")
     try:
         # Convert before interpolation so signed/unsigned integer subtraction
         # cannot wrap. Normal pipeline float64 observations remain unchanged.
-        numeric = observations.astype("float64")
+        numeric = pd.Series(observations, dtype="float64")
         with np.errstate(over="ignore", invalid="ignore"):
             result = float(numeric.quantile(1 - selected_confidence))
     except (TypeError, ValueError, OverflowError, FloatingPointError):
