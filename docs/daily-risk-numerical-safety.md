@@ -53,7 +53,8 @@ files. Their combined integration still needs validation after acceptance.
 
 ```bash
 python -m pytest -q tests/unit/test_daily_risk_finite_outputs.py \
-  tests/unit/test_daily_risk_publication_guard.py
+  tests/unit/test_daily_risk_publication_guard.py \
+  tests/unit/test_daily_risk_confidence_conversion.py
 make quality-check
 make security-check
 make readiness-check
@@ -70,3 +71,25 @@ claim live provider access or a real database write.
 No schema, thresholds, source IDs, dependencies, activation defaults, portfolio
 positions, scheduling or deployment changes. Independent review and explicit
 engineer acceptance remain separate from tests and self-review.
+
+## Confidence conversion failures
+
+The daily builder validates confidence before consuming its event iterable. An
+oversized Python integer such as `10**1000` previously raised `OverflowError`
+during conversion, outside the intended `ValidationError` contract. Standard
+conversion failures (`TypeError`, `ValueError`, `OverflowError`) now produce the
+same fixed confidence diagnostic as other invalid probabilities, without showing
+the underlying conversion exception in an ordinary traceback. Unexpected errors
+and interruptions still propagate; this is not a blanket exception handler.
+
+This is a direct Python API error-classification repair, not evidence that an
+ordinary CLI confidence or a valid risk calculation failed. The accepted type
+set, exclusive zero/one bounds, finite-value requirement, model version and
+calculation identifiers are unchanged. The CLI already validates its textual
+confidence argument. No runner, source-reader or publication logic is changed.
+
+New regressions exercise the full builder with empty, short and longer histories,
+prove invalid confidence does not consume a lazy history, check numeric-subclass
+conversion errors and preserve ordinary outputs and open-interval boundaries.
+These pure-builder tests do not establish rejection before the runner's earlier
+configuration/raw-data reads, or constitute a real warehouse-write proof.

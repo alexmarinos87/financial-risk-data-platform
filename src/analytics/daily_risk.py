@@ -40,7 +40,10 @@ def _require_integer(value: int, label: str, minimum: int, maximum: int) -> int:
 def _require_confidence(value: float) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValidationError("var_confidence must be a number between 0 and 1")
-    parsed = float(value)
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError):
+        raise ValidationError("var_confidence must be a number between 0 and 1") from None
     if not math.isfinite(parsed) or not 0 < parsed < 1:
         raise ValidationError("var_confidence must be a number between 0 and 1")
     return parsed
