@@ -78,5 +78,16 @@ def acquire_partition_locks(
 
 
 def release_partition_locks(lock_paths: list[Path]) -> None:
+    """Attempt every supplied release and retain all cleanup failures."""
+    failures: list[BaseException] = []
     for path in lock_paths:
-        path.unlink(missing_ok=True)
+        try:
+            path.unlink(missing_ok=True)
+        except BaseException as exc:
+            # Finish cleanup even on interruption, then propagate without
+            # turning a partially released set into a successful result.
+            failures.append(exc)
+    if len(failures) == 1:
+        raise failures[0]
+    if failures:
+        raise BaseExceptionGroup("Partition lock release failed", failures)
