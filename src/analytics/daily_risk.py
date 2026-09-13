@@ -49,6 +49,15 @@ def _require_confidence(value: float) -> float:
     return parsed
 
 
+def validate_daily_risk_parameters(
+    *, volatility_window: int, var_window: int, var_confidence: float,
+) -> float:
+    """Validate numerical options without I/O and return normalized confidence."""
+    _require_integer(volatility_window, "volatility_window", 2, TRADING_DAYS_PER_YEAR)
+    _require_integer(var_window, "var_window", 2, 10 * TRADING_DAYS_PER_YEAR)
+    return _require_confidence(var_confidence)
+
+
 def _normalise_events(events: Iterable[EventInput], end_date: date | None) -> list[MarketEvent]:
     validated: list[MarketEvent] = []
     try:
@@ -138,13 +147,11 @@ def build_daily_risk_outputs(
     corrected analytical version remains distinguishable from an earlier result.
     """
 
-    volatility_window = _require_integer(
-        volatility_window, "volatility_window", 2, TRADING_DAYS_PER_YEAR
+    confidence = validate_daily_risk_parameters(
+        volatility_window=volatility_window,
+        var_window=var_window,
+        var_confidence=var_confidence,
     )
-    var_window = _require_integer(
-        var_window, "var_window", 2, 10 * TRADING_DAYS_PER_YEAR
-    )
-    confidence = _require_confidence(var_confidence)
     if start_date is not None and end_date is not None and start_date > end_date:
         raise ValidationError("start_date must be on or before end_date")
 

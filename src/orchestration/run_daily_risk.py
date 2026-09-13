@@ -11,7 +11,11 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from ..analytics.daily_risk import DailyRiskOutputs, build_daily_risk_outputs
+from ..analytics.daily_risk import (
+    DailyRiskOutputs,
+    build_daily_risk_outputs,
+    validate_daily_risk_parameters,
+)
 from ..common.exceptions import StorageError, ValidationError
 from ..ingestion.alpha_vantage_client import alpha_vantage_daily_event_id
 from ..ingestion.schemas import MarketEvent
@@ -264,6 +268,11 @@ def run_daily_risk(
     if start_date is not None and start_date > end_date:
         raise ValidationError("start_date must be on or before end_date")
 
+    var_confidence = validate_daily_risk_parameters(
+        volatility_window=volatility_window,
+        var_window=var_window,
+        var_confidence=var_confidence,
+    )
     selected_loader = config_loader or load_storage_config
     try:
         storage_config = selected_loader(storage_config_path)
