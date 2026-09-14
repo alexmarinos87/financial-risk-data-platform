@@ -62,7 +62,11 @@ def _normalise_events(events: Iterable[EventInput], end_date: date | None) -> li
     validated: list[MarketEvent] = []
     try:
         for candidate in events:
-            event = MarketEvent.model_validate(candidate)
+            # Model instances can be mutated or constructed without validation.
+            # A field snapshot also detaches each observation from a reused
+            # object before the iterable advances and mutates it again.
+            snapshot = dict(candidate) if isinstance(candidate, MarketEvent) else candidate
+            event = MarketEvent.model_validate(snapshot)
             event_timestamp = event.ts_event.astimezone(timezone.utc)
             if event_timestamp.time() != time.min:
                 raise ValidationError("Daily market events must use UTC midnight event timestamps")
