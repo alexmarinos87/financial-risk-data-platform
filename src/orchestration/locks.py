@@ -4,9 +4,9 @@ import json
 import os
 from contextlib import ExitStack
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
-from ..common.exceptions import OverlapError
+from ..common.exceptions import OverlapError, ValidationError
 
 _LOCKS_DIR = ".orchestration_locks"
 
@@ -37,6 +37,20 @@ def acquire_partition_locks(
     *,
     stale_after_seconds: int | None = None,
 ) -> list[Path]:
+    # Validate the complete request before creating directories or lock files.
+    # Do not normalize away traversal or accept Windows drive syntax on POSIX.
+    for partition in partitions:
+        if (
+            not isinstance(partition, str)
+            or not partition
+            or "\\" in partition
+            or PureWindowsPath(partition).drive
+            or any(part in {"", ".", ".."} for part in partition.split("/"))
+            or any(ord(character) < 32 or ord(character) == 127 for character in partition)
+        ):
+            raise ValidationError(
+                "Partition must be a non-empty relative path without traversal"
+            )
     lock_paths: list[Path] = []
     with ExitStack() as rollback:
         for partition in sorted(set(partitions)):
