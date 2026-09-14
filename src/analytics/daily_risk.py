@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timezone
 from typing import Any, TypeAlias
 
+import numpy as np
 import pandas as pd
 from pydantic import ValidationError as PydanticValidationError
 
@@ -39,17 +40,42 @@ def _require_integer(value: int, label: str, minimum: int, maximum: int) -> int:
 def _require_confidence(value: float) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValidationError("var_confidence must be a number between 0 and 1")
-    parsed = float(value)
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError):
+        raise ValidationError("var_confidence must be a number between 0 and 1") from None
     if not math.isfinite(parsed) or not 0 < parsed < 1:
         raise ValidationError("var_confidence must be a number between 0 and 1")
     return parsed
+
+
+def validate_daily_risk_parameters(
+    *, volatility_window: int, var_window: int, var_confidence: float,
+) -> float:
+    """Validate numerical options without I/O and return normalized confidence."""
+    _require_integer(volatility_window, "volatility_window", 2, TRADING_DAYS_PER_YEAR)
+    _require_integer(var_window, "var_window", 2, 10 * TRADING_DAYS_PER_YEAR)
+    return _require_confidence(var_confidence)
+
+
+def validate_daily_risk_dates(*, start_date: date | None, end_date: date | None) -> None:
+    """Require calendar dates, not timestamps or implicitly parsed text."""
+    for label, value in (("start_date", start_date), ("end_date", end_date)):
+        if value is not None and type(value) is not date:
+            raise ValidationError(f"{label} must be a calendar date or None")
+    if start_date is not None and end_date is not None and start_date > end_date:
+        raise ValidationError("start_date must be on or before end_date")
 
 
 def _normalise_events(events: Iterable[EventInput], end_date: date | None) -> list[MarketEvent]:
     validated: list[MarketEvent] = []
     try:
         for candidate in events:
-            event = MarketEvent.model_validate(candidate)
+            # Model instances can be mutated or constructed without validation.
+            # A field snapshot also detaches each observation from a reused
+            # object before the iterable advances and mutates it again.
+            snapshot = dict(candidate) if isinstance(candidate, MarketEvent) else candidate
+            event = MarketEvent.model_validate(snapshot)
             event_timestamp = event.ts_event.astimezone(timezone.utc)
             if event_timestamp.time() != time.min:
                 raise ValidationError("Daily market events must use UTC midnight event timestamps")
@@ -113,6 +139,11 @@ def _in_output_range(event: MarketEvent, start_date: date | None) -> bool:
     return start_date is None or event.ts_event.astimezone(timezone.utc).date() >= start_date
 
 
+def _require_finite_metrics(values: pd.Series, label: str) -> None:
+    if not all(math.isfinite(float(value)) for value in values):
+        raise ValidationError(f"{label} must contain only finite calculated values")
+
+
 def build_daily_risk_outputs(
     events: Iterable[EventInput],
     *,
@@ -129,15 +160,12 @@ def build_daily_risk_outputs(
     corrected analytical version remains distinguishable from an earlier result.
     """
 
-    volatility_window = _require_integer(
-        volatility_window, "volatility_window", 2, TRADING_DAYS_PER_YEAR
+    confidence = validate_daily_risk_parameters(
+        volatility_window=volatility_window,
+        var_window=var_window,
+        var_confidence=var_confidence,
     )
-    var_window = _require_integer(
-        var_window, "var_window", 2, 10 * TRADING_DAYS_PER_YEAR
-    )
-    confidence = _require_confidence(var_confidence)
-    if start_date is not None and end_date is not None and start_date > end_date:
-        raise ValidationError("start_date must be on or before end_date")
+    validate_daily_risk_dates(start_date=start_date, end_date=end_date)
 
     validated = _normalise_events(events, end_date)
     returns_records: list[dict[str, Any]] = []
@@ -153,16 +181,25 @@ def build_daily_risk_outputs(
             continue
 
         prices = pd.Series([event.price for event in group], dtype="float64")
-        returns = prices.pct_change(fill_method=None)
-        rolling_volatility = (
-            returns.rolling(
-                window=volatility_window,
-                min_periods=volatility_window,
-            ).std()
-            * math.sqrt(TRADING_DAYS_PER_YEAR)
-        )
-        drawdown = prices / prices.cummax() - 1.0
-        maximum_drawdown = drawdown.cummin()
+        with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+            returns = prices.pct_change(fill_method=None)
+            # Only the first return is an expected missing observation.
+            _require_finite_metrics(returns.iloc[1:], "Daily returns")
+            rolling_volatility = (
+                returns.rolling(
+                    window=volatility_window,
+                    min_periods=volatility_window,
+                ).std()
+                * math.sqrt(TRADING_DAYS_PER_YEAR)
+            )
+            # Warm-up is represented by None below, not by accepting a NaN
+            # after enough observations have accumulated.
+            _require_finite_metrics(
+                rolling_volatility.iloc[volatility_window:], "Daily volatility"
+            )
+            drawdown = prices / prices.cummax() - 1.0
+            _require_finite_metrics(drawdown, "Daily drawdown")
+            maximum_drawdown = drawdown.cummin()
 
         for index in range(1, len(group)):
             current = group[index]
@@ -217,11 +254,12 @@ def build_daily_risk_outputs(
             var_start = max(1, index - var_window + 1)
             var_slice = returns.iloc[var_start : index + 1].dropna()
             var_inputs = group[var_start - 1 : index + 1]
-            var_loss = (
-                max(0.0, -value_at_risk(var_slice, confidence=confidence))
-                if len(var_slice) >= 2
-                else None
-            )
+            var_loss: float | None = None
+            if len(var_slice) >= 2:
+                quantile = value_at_risk(var_slice, confidence=confidence)
+                if not math.isfinite(quantile):
+                    raise ValidationError("Daily risk quantile is not finite")
+                var_loss = max(0.0, -quantile)
             summary_inputs = group[: index + 1]
             full_history_ready = index >= max(volatility_window, var_window)
             summary_records.append(
