@@ -51,6 +51,17 @@ def acquire_partition_locks(
             raise ValidationError(
                 "Partition must be a non-empty relative path without traversal"
             )
+    # None disables age-based takeover. Reject invalid durations even when
+    # no contention occurs; a nonpositive timeout can evict a fresh owner.
+    if stale_after_seconds is not None:
+        if type(stale_after_seconds) is not int or stale_after_seconds <= 0:
+            raise ValidationError("stale_after_seconds must be a positive integer or None")
+        try:
+            timedelta(seconds=stale_after_seconds)
+        except OverflowError:
+            raise ValidationError(
+                "stale_after_seconds exceeds the supported duration range"
+            ) from None
     lock_paths: list[Path] = []
     with ExitStack() as rollback:
         for partition in sorted(set(partitions)):
