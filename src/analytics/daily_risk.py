@@ -58,6 +58,15 @@ def validate_daily_risk_parameters(
     return _require_confidence(var_confidence)
 
 
+def validate_daily_risk_dates(*, start_date: date | None, end_date: date | None) -> None:
+    """Require calendar dates, not timestamps or implicitly parsed text."""
+    for label, value in (("start_date", start_date), ("end_date", end_date)):
+        if value is not None and type(value) is not date:
+            raise ValidationError(f"{label} must be a calendar date or None")
+    if start_date is not None and end_date is not None and start_date > end_date:
+        raise ValidationError("start_date must be on or before end_date")
+
+
 def _normalise_events(events: Iterable[EventInput], end_date: date | None) -> list[MarketEvent]:
     validated: list[MarketEvent] = []
     try:
@@ -156,8 +165,7 @@ def build_daily_risk_outputs(
         var_window=var_window,
         var_confidence=var_confidence,
     )
-    if start_date is not None and end_date is not None and start_date > end_date:
-        raise ValidationError("start_date must be on or before end_date")
+    validate_daily_risk_dates(start_date=start_date, end_date=end_date)
 
     validated = _normalise_events(events, end_date)
     returns_records: list[dict[str, Any]] = []

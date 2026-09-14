@@ -21,7 +21,7 @@ The builder still validates independently for callers that bypass the runner.
 
 Invalid numerical requests now take precedence over storage failures. CLI
 semantic failures keep exit code 1 and the existing redacted diagnostic; parser
-usage handling is unchanged. Defaults, date/symbol policy, mathematical methods,
+usage handling is unchanged. Defaults, symbol rules, mathematical methods,
 model identifiers, valid records and publication ordering are unchanged. Valid
 requests still perform the existing configuration, raw-read and writer actions.
 This validation does not establish source availability or statistical adequacy.
@@ -44,3 +44,30 @@ The local development harness substitutes unused provider/writer import modules
 because the full checkout is unavailable. Those substitutes are not committed;
 full-repository CI must exercise the tests with normal imports. No dependency,
 schema, workflow, activation, provider request or deployment change is involved.
+
+## Calendar-date preflight
+
+The builder and runner share `validate_daily_risk_dates`. Optional bounds must
+be built-in `datetime.date` values, not `datetime`, text, booleans or custom date
+subclasses. No implicit parsing, timezone conversion or subclass comparison is
+performed. Invalid dates now raise the fixed public `ValidationError` before
+the builder consumes its iterable or the runner invokes storage callbacks.
+Reversed-range diagnostics and inclusive calendar-date selection are preserved.
+
+The direct builder still accepts omitted bounds and `date.min` / `date.max`.
+The runner requires an end date earlier than `date.max`: its existing raw
+reader constructs an exclusive next-day boundary. That existing reader limit
+is now checked before configuration or raw-file access instead of afterward.
+The low-level reader implementation is unchanged.
+
+This tightens direct-Python-API input types and makes invalid-date diagnostics
+take precedence over missing data or storage failures. CLI text parsing still
+produces ordinary calendar dates; its semantic rejection remains exit 1 with
+the existing diagnostic and no summary creation. Valid dates, leap-day
+selection, retained calculation history, model identifiers and data are not
+changed. Tests use the real builder and runner with I/O spies, not a real
+Parquet/warehouse publication.
+
+```bash
+python -m pytest -q tests/unit/test_daily_risk_dates.py
+```

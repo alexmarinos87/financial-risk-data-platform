@@ -14,6 +14,7 @@ from uuid import uuid4
 from ..analytics.daily_risk import (
     DailyRiskOutputs,
     build_daily_risk_outputs,
+    validate_daily_risk_dates,
     validate_daily_risk_parameters,
 )
 from ..common.exceptions import StorageError, ValidationError
@@ -265,8 +266,13 @@ def run_daily_risk(
     config_loader: ConfigLoader | None = None,
 ) -> dict[str, Any]:
     canonical_symbol = _canonical_symbol(symbol)
-    if start_date is not None and start_date > end_date:
-        raise ValidationError("start_date must be on or before end_date")
+    validate_daily_risk_dates(start_date=start_date, end_date=end_date)
+    if end_date is None:
+        raise ValidationError("end_date must be a calendar date")
+    # The raw reader needs an exclusive next-day boundary. Check its range
+    # before loading configuration or scanning any raw files.
+    if end_date == date.max:
+        raise ValidationError("end_date is outside the supported range")
 
     var_confidence = validate_daily_risk_parameters(
         volatility_window=volatility_window,
