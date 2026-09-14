@@ -213,3 +213,61 @@ src/orchestration/backfill.py
 tests/integration/test_backfill.py
 docs/operational-runbook.md
 ```
+
+## Failed Partition Lock Acquisition
+
+Primary arc42 building block: `orchestration`. This is a reliability follow-up
+to iteration-backlog item 5, not a change to backfill scheduling or storage.
+
+Scenario:
+
+A run creates the first partition lock, then a later directory/open operation
+fails, or a lock payload cannot be written or closed. Previously these paths
+could leave earlier locks, an empty/partial current lock, or an unwrapped file
+descriptor behind even though acquisition raised an error.
+
+Current behaviour:
+
+1. Immediately after each successful exclusive creation, register that path for
+   rollback before descriptor wrapping or payload writing.
+2. Unwind registered paths in reverse order on an acquisition failure, including
+   earlier partitions. Descriptor ownership stays with acquisition (`closefd=False`);
+   a `finally` closes it on wrapping, write, close and normal completion paths.
+3. If removing one path fails, still attempt the remaining callbacks. Propagate
+   the cleanup failure with the original exception retained in its context chain;
+   do not claim complete cleanup or return an acquired lock list.
+4. Only after every payload is closed successfully, retain all locks and return
+   the existing sorted, deduplicated `list[Path]`. The caller remains responsible
+   for `release_partition_locks` after its protected work.
+
+Overlap and stale-lock rules are unchanged. A lock that blocked exclusive
+creation is not registered for rollback. Losing a stale-recreation race still
+fails, preserves that contender's file and unwinds earlier acquired partitions.
+No new retry, timeout, owner format, stale threshold or automatic deletion sweep
+is introduced. Empty directories may remain after a failed acquisition.
+
+Limits and operating response:
+
+This is exception-unwinding recovery, not crash durability, atomic visibility of
+multiple lock files, or a distributed/fenced lease. Tests inject interruptions
+at explicit Python operation boundaries; they do not prove arbitrary asynchronous
+signal safety, process-kill or power-loss cleanup. Trusted local paths and the
+existing no-concurrent-replacement assumption remain necessary. Timestamp-based
+stale takeover and path-only release do not fence an old owner; an active run
+must not be treated as dead solely because its lock is old.
+
+When cleanup itself fails, fix the filesystem problem and confirm no active owner
+before manually removing any residual lock. Do not automatically delete the lock
+directory or imply that rerunning can repair every leftover lock.
+
+Evidence:
+
+```bash
+python -m pytest -q tests/unit/test_locks.py \
+  tests/unit/test_partition_lock_rollback.py
+```
+
+The tests use actual temporary files/descriptors with targeted fault injection,
+check immediate retry after successful rollback, preserve existing contenders,
+and exercise ordinary blocking and release through a second Python process.
+They do not run a cloud job or prove end-to-end data publication.
