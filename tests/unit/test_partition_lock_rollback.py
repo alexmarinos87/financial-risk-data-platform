@@ -163,7 +163,8 @@ def test_losing_stale_recreation_does_not_remove_the_new_contender(
 
     def competing_open(path: Any, flags: int, *args: Any, **kwargs: Any) -> int:
         nonlocal attempts
-        if Path(path) == target:
+        # Race only with exclusive creation, not read-only metadata inspection.
+        if Path(path) == target and flags & os.O_EXCL:
             attempts += 1
             if attempts == 2:
                 target.write_bytes(b"other-owner")
