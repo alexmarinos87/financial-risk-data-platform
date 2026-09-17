@@ -91,3 +91,29 @@ safe-open primitives. The FIFO probe runs in a child with a five-second timeout.
 
 Python documents the resource risk of unbounded JSON decoding:
 https://docs.python.org/3.12/library/json.html
+
+
+## Short reads do not establish complete metadata
+
+The stale inspector accumulates bytes until EOF or the existing 65,537-byte
+read budget is exhausted. One short read is not proof that the metadata is
+complete: its first fragment can be valid JSON even when the remaining file
+is malformed or oversized. A later read error also leaves the lock blocked.
+UTF-8 decoding and JSON parsing happen only after the bounded read completes.
+
+The byte limit, timestamp/timeout policy, safe-open flags, descriptor cleanup,
+and acquisition/release APIs are unchanged. This can recover valid metadata
+split across reads, including multibyte UTF-8, without treating a partial JSON
+prefix as permission to remove an existing lock. The additional EOF read is an
+intentional cost. An unhealthy filesystem can still stall a regular-file read;
+this is not a time limit or a consistent snapshot under concurrent modification.
+
+Run `python -m pytest -q tests/unit/test_partition_lock_short_reads.py` alongside
+the existing lock suites. The tests constrain actual descriptor reads to short
+chunks and exercise a trailing invalid document, post-prefix read error, growth
+after stat, exact limits, rollback, and descriptor closure. No production file
+is read or removed. The tests simulate legal short reads; they do not claim to
+have observed this timing on a particular filesystem in production.
+
+Python's low-level read contract:
+https://docs.python.org/3/library/os.html#os.read

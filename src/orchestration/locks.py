@@ -30,7 +30,14 @@ def _is_stale_lock(path: Path, stale_after_seconds: int | None) -> bool:
             metadata = os.fstat(fd)
             if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > _MAX_LOCK_METADATA_BYTES:
                 return False
-            content = os.read(fd, _MAX_LOCK_METADATA_BYTES + 1)
+            # A short read is not EOF. Collect one bounded body before parsing;
+            # a valid JSON prefix must not hide trailing bytes or a later error.
+            content = bytearray()
+            while len(content) <= _MAX_LOCK_METADATA_BYTES:
+                chunk = os.read(fd, _MAX_LOCK_METADATA_BYTES + 1 - len(content))
+                if not chunk:
+                    break
+                content.extend(chunk)
         finally:
             os.close(fd)
         # The file may have grown since fstat. Never parse an oversized body.
