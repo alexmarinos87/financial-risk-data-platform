@@ -58,7 +58,7 @@ The direct builder still accepts omitted bounds and `date.min` / `date.max`.
 The runner requires an end date earlier than `date.max`: its existing raw
 reader constructs an exclusive next-day boundary. That existing reader limit
 is now checked before configuration or raw-file access instead of afterward.
-The low-level reader implementation is unchanged.
+The low-level reader date conversion is unchanged.
 
 This tightens direct-Python-API input types and makes invalid-date diagnostics
 take precedence over missing data or storage failures. CLI text parsing still
@@ -71,3 +71,40 @@ Parquet/warehouse publication.
 ```bash
 python -m pytest -q tests/unit/test_daily_risk_dates.py
 ```
+
+
+## Preserve raw volume values until validation
+
+The raw daily reader now passes volume values unchanged to MarketEvent integer
+validation instead of calling int() first. Truncating a value such as -0.5 to 0
+or 1.5 to 1 destroyed evidence of an invalid observation before the schema could
+reject it. Boolean raw volumes are explicitly rejected as in the raw-writer
+contract; they are not treated as zero/one observations.
+
+Fractional floats/Decimals and booleans now produce the existing fixed
+StorageError (`Raw Alpha Vantage daily records are incompatible`) before any
+curated publication. Integral floats/Decimals and ordinary integer volumes still
+normalize to integers. No shared schema, mathematical method, event identity,
+raw-file bytes or successful publication ordering changes. Existing schema
+coercions, such as integer text, remain supported; this is not a new strict
+physical-Parquet schema. Other field conversions are unchanged.
+
+Run the two focused suites:
+
+```bash
+python -m pytest -q tests/unit/test_daily_raw_volume.py \
+  tests/integration/test_daily_raw_volume_validation.py
+```
+
+The unit suite supplies query-result rows and checks the actual reader/runner,
+public errors, input immutability and no writer calls. It replaces query and
+provider-ID boundaries and does not claim actual Parquet decoding. The integration
+suite deliberately serializes malformed upstream volumes through the generic
+Parquet utility, bypassing the canonical raw-event writer. It exercises normal
+reader/runner imports and verifies unchanged raw bytes and absent curated output.
+Integral physical representations are positive controls. Run the latter suite in
+an environment with the existing DuckDB dependency; it must not be skipped as a
+substitute for validation.
+
+Pydantic documents exact-integer conversion for float and Decimal inputs:
+https://pydantic.dev/docs/validation/latest/concepts/conversion_table/

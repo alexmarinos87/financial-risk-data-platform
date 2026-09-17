@@ -195,11 +195,15 @@ def load_alpha_vantage_daily_events(
     events: list[MarketEvent] = []
     try:
         for row in rows:
+            # Preserve the physical value for the schema's lossless integer
+            # validation. int() would silently truncate fractional volumes.
+            if isinstance(row[3], bool):
+                raise ValueError("Raw daily volume must not be a boolean")
             event = MarketEvent(
                 event_id=str(row[0]),
                 symbol=str(row[1]),
                 price=float(row[2]),
-                volume=int(row[3]),
+                volume=row[3],
                 ts_event=_timestamp_from_epoch_microseconds(row[4]),
                 ts_ingest=_timestamp_from_epoch_microseconds(row[5]),
                 source=str(row[6]),
