@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 from contextlib import ExitStack
 from datetime import datetime, timedelta, timezone
 from pathlib import Path, PureWindowsPath
@@ -9,6 +10,7 @@ from pathlib import Path, PureWindowsPath
 from ..common.exceptions import OverlapError, ValidationError
 
 _LOCKS_DIR = ".orchestration_locks"
+_MAX_LOCK_METADATA_BYTES = 65_536
 
 
 def _lock_path(base_dir: Path, partition: str) -> Path:
@@ -18,11 +20,25 @@ def _lock_path(base_dir: Path, partition: str) -> Path:
 def _is_stale_lock(path: Path, stale_after_seconds: int | None) -> bool:
     if stale_after_seconds is None:
         return False
+    if not all(hasattr(os, flag) for flag in ("O_NONBLOCK", "O_NOFOLLOW")):
+        return False
 
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        # Never wait for a FIFO writer or follow a final-component symlink.
+        fd = os.open(str(path), os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+        try:
+            metadata = os.fstat(fd)
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > _MAX_LOCK_METADATA_BYTES:
+                return False
+            content = os.read(fd, _MAX_LOCK_METADATA_BYTES + 1)
+        finally:
+            os.close(fd)
+        # The file may have grown since fstat. Never parse an oversized body.
+        if len(content) > _MAX_LOCK_METADATA_BYTES:
+            return False
+        payload = json.loads(content.decode("utf-8"))
         acquired_at = datetime.fromisoformat(str(payload["acquired_at"]))
-    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+    except (OSError, KeyError, TypeError, ValueError, RecursionError):
         return False
 
     if acquired_at.tzinfo is None:

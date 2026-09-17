@@ -23,7 +23,7 @@ partially attempted acquisition. Absolute and normalized-alias names that once
 worked incidentally are deliberately no longer supported.
 
 This is lexical validation, not a symlink-safe filesystem sandbox. The base and
-its directories must remain trusted; symlinks, concurrent directory replacement,
+its directories must remain trusted; parent symlinks, concurrent directory replacement,
 stale-owner races, fencing and crash recovery are not addressed. The release
 API still assumes the caller supplies trusted paths obtained from acquisition.
 No existing lock is swept, renamed or migrated, and stale thresholds are unchanged.
@@ -58,3 +58,36 @@ Higher-level runners can perform their earlier reads before calling this API.
 ```bash
 python -m pytest -q tests/unit/test_partition_lock_timeout.py
 ```
+
+
+## Bounded stale-metadata inspection
+
+Before deciding that an existing lock is old enough to replace, the inspector
+opens its final path component with nonblocking and no-follow flags, then checks
+the descriptor is a regular file. It reads at most 65,537 bytes and only parses
+UTF-8 metadata of at most 65,536 bytes. Size is checked before reading and again
+before JSON parsing to cover file growth. Descriptors close on every exit path.
+Platforms lacking either safe-open flag conservatively disable stale takeover;
+normal uncontended acquisition and explicit release remain available.
+
+A FIFO, directory, symbolic link, oversized body, invalid UTF-8/JSON or decoder
+depth failure does not establish staleness. The acquisition remains blocked with
+OverlapError, and rollback still removes earlier locks acquired by the attempt.
+The existing entry is not deleted, repaired or followed to establish an old age.
+Normal small regular-file metadata retains the current timestamp/timeout policy,
+including legacy naive timestamps interpreted as UTC. Oversized legacy payloads
+can no longer be reclaimed automatically; inspect ownership before intervention.
+
+This is not a complete filesystem sandbox: parent directories remain trusted,
+and replacement between inspection and unlink is still a race. Nonblocking open
+avoids waiting for a FIFO writer, not arbitrary stalls on an unhealthy filesystem.
+No fencing, stale-owner liveness proof, crash recovery or metadata migration is
+provided. Release semantics and the acquisition payload are unchanged.
+
+Run `python -m pytest -q tests/unit/test_partition_lock_metadata.py` alongside
+the existing lock and process-recovery suites. The tests cover exact size edges,
+real symlinks/FIFOs, rollback, malformed metadata, descriptor cleanup and missing
+safe-open primitives. The FIFO probe runs in a child with a five-second timeout.
+
+Python documents the resource risk of unbounded JSON decoding:
+https://docs.python.org/3.12/library/json.html
