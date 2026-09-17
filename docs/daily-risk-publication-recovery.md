@@ -26,7 +26,9 @@ validation, hard links and subsequent replay use the real implementations.
 A retry must recognize already-published rows, write only the missing rows and
 report correct per-dataset counts. Reading every resulting Parquet row must
 match the analytical builder, with exactly one occurrence of each calculation
-ID. Published file bytes and raw history remain unchanged; another full replay
+ID. Timestamp fields are read as exact epoch microseconds and reconstructed as
+aware UTC datetimes, matching the reader without optional decoding dependencies.
+Published file bytes and raw history remain unchanged; another full replay
 writes zero rows. The eighth-file case covers a failed acknowledgement after
 all expected rows have become visible.
 

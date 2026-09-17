@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +20,8 @@ from tests.storage_config_helpers import build_storage_config, write_storage_con
 
 VALID_PRICES = [100.0, 110.0, 99.0, 108.9]
 EXPECTED_COUNTS = {"daily_returns": 3, "daily_volatility": 2, "daily_risk_summary": 3}
+TIMESTAMP_COLUMNS = {"ts_event", "ts_ingest", "window_start", "window_end"}
+UTC_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
 
 def _events(prices: list[float], *, start_day: int = 1) -> list[dict[str, Any]]:
@@ -52,10 +54,24 @@ def _rows(root: Path, dataset: str) -> list[dict[str, Any]]:
     with duckdb.connect() as connection:
         for path in sorted((root / "curated" / dataset).rglob("*.parquet")):
             cursor = connection.execute(
-                "SELECT * FROM read_parquet(?, hive_partitioning=false)", [str(path)],
+                "SELECT * FROM read_parquet(?, hive_partitioning=false) LIMIT 0", [str(path)],
             )
             columns = [description[0] for description in cursor.description]
-            rows.extend(dict(zip(columns, row, strict=True)) for row in cursor.fetchall())
+            # Match the reader's UTC-microsecond boundary; fetching native
+            # TIMESTAMPTZ objects would require an optional pytz dependency.
+            identifiers = {column: '"' + column.replace('"', '""') + '"' for column in columns}
+            projection = ", ".join(
+                f"epoch_us({identifier}) AS {identifier}" if column in TIMESTAMP_COLUMNS
+                else identifier for column, identifier in identifiers.items()
+            )
+            cursor = connection.execute(
+                f"SELECT {projection} FROM read_parquet(?, hive_partitioning=false)", [str(path)],
+            )
+            for values in cursor.fetchall():
+                record = dict(zip(columns, values, strict=True))
+                for column in TIMESTAMP_COLUMNS.intersection(record):
+                    record[column] = UTC_EPOCH + timedelta(microseconds=record[column])
+                rows.append(record)
     return sorted(rows, key=lambda row: row["calculation_id"])
 
 
