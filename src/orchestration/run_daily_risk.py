@@ -5,6 +5,7 @@ import json
 import math
 import re
 import sys
+import tempfile
 from collections.abc import Callable, Sequence
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
@@ -373,16 +374,18 @@ def run_daily_risk(
 
 
 def _write_summary(path: Path, summary: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary_path = path.with_suffix(path.suffix + ".tmp")
     try:
-        temporary_path.write_text(
-            json.dumps(summary, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-        temporary_path.replace(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # Each writer owns a private staging directory on the target filesystem.
+        # Never write through or remove a predictable, possibly unrelated .tmp.
+        with tempfile.TemporaryDirectory(dir=path.parent, prefix=".daily-risk-summary-") as staging:
+            temporary_path = Path(staging) / "summary.json"
+            temporary_path.write_text(
+                json.dumps(summary, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            temporary_path.replace(path)
     except OSError:
-        temporary_path.unlink(missing_ok=True)
         raise StorageError("Unable to write the daily risk summary") from None
 
 
