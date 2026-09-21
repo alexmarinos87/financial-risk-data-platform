@@ -108,3 +108,33 @@ substitute for validation.
 
 Pydantic documents exact-integer conversion for float and Decimal inputs:
 https://pydantic.dev/docs/validation/latest/concepts/conversion_table/
+
+
+## Bound collection before sorting raw file paths
+
+`_raw_parquet_files` consumes at most `MAX_RAW_FILES + 1` matching paths from
+`Path.rglob` before sorting. With the existing 2,048-file policy, match 2,049
+proves the request is too large and raises the existing file-limit StorageError.
+The previous implementation exhausted and sorted every match before applying
+that check. The limit now bounds this function's collected path list, rather
+than merely rejecting after the allocation and enumeration have happened.
+
+This is rejection, not truncation: no partial inventory is returned to DuckDB.
+Accepted inventories keep their complete sorted order and existing byte and
+file-type checks. The limit, public diagnostics, schemas, mathematical methods
+and publication policy are unchanged. A failure encountered only after the first
+over-limit match is no longer observed; the known limit failure takes precedence.
+
+```bash
+python -m pytest -q tests/unit/test_daily_raw_inventory_bound.py
+```
+
+Tests measure iterator consumption at a small limit and the real 2,048 limit,
+place a failing tail after known excess, exercise the real runner's abort path,
+and retain sorted-order, actual directory, empty, byte-limit and unsafe-entry
+controls. These are inventory tests; fixture bytes are not decoded as Parquet.
+
+This does not cap the number of nonmatching directories visited, memory used
+inside the underlying directory enumerator, or filesystem-operation duration.
+It does not add snapshot consistency or change `rglob`'s error/symlink semantics.
+Those are separate concerns, not guarantees supplied by a bounded result list.

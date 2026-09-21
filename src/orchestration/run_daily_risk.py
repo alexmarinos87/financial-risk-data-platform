@@ -8,6 +8,7 @@ import sys
 import tempfile
 from collections.abc import Callable, Sequence
 from datetime import date, datetime, time, timedelta, timezone
+from itertools import islice
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -126,7 +127,8 @@ def _raw_parquet_files(storage_config: dict[str, Any]) -> list[Path]:
         raise StorageError("Raw daily storage path must be a directory")
 
     try:
-        files = sorted(dataset_path.rglob("*.parquet"))
+        # One extra match proves excess without collecting the entire tree.
+        files = sorted(islice(dataset_path.rglob("*.parquet"), MAX_RAW_FILES + 1))
     except OSError:
         raise StorageError("Raw daily storage could not be inventoried") from None
     if not files:
