@@ -186,10 +186,14 @@ def load_alpha_vantage_daily_events(
             cursor = connection.execute(
                 "SELECT event_id, symbol, price, volume, "
                 "epoch_us(ts_event) AS ts_event, epoch_us(ts_ingest) AS ts_ingest, source "
-                f"FROM {relation} WHERE {where_clause} ORDER BY ts_event, event_id",
-                [SOURCE_NAME, canonical_symbol, end_exclusive_us],
+                f"FROM {relation} WHERE {where_clause} ORDER BY ts_event, event_id LIMIT ?",
+                [SOURCE_NAME, canonical_symbol, end_exclusive_us, MAX_RAW_ROWS + 1],
             )
             rows = cursor.fetchall()
+            # The count and fetch are separate observations of external files.
+            # One extra row detects growth without returning a truncated history.
+            if len(rows) > MAX_RAW_ROWS:
+                raise StorageError("Raw daily storage exceeds the row scan limit")
     except StorageError:
         raise
     except Exception:

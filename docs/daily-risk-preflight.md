@@ -138,3 +138,37 @@ This does not cap the number of nonmatching directories visited, memory used
 inside the underlying directory enumerator, or filesystem-operation duration.
 It does not add snapshot consistency or change `rglob`'s error/symlink semantics.
 Those are separate concerns, not guarantees supplied by a bounded result list.
+
+## Bound returned rows independently of the earlier count
+
+The raw reader retains its early `COUNT(*)` rejection, but the ordered selection
+now also binds `LIMIT MAX_RAW_ROWS + 1`. It checks the actual result length before
+constructing event objects. The extra row proves that a request exceeds the
+existing 100,000-row ceiling; it is never returned as a truncated analytical
+history. Both rejection paths use the same fixed `StorageError`.
+
+Counting and selecting are separate observations of external files. An earlier
+small count must not authorize a later unlimited fetch when a file is replaced
+between those operations. This does not imply that the canonical immutable raw
+writer normally replaces files. Valid results remain complete, filtered by the
+same source/symbol/end-date conditions and ordered by timestamp and event ID.
+Changes that remain within the ceiling are accepted as before; the count is not
+a source snapshot or consistency token.
+
+```bash
+python -m pytest -q tests/unit/test_daily_raw_row_budget.py \
+  tests/integration/test_daily_raw_row_budget_parquet.py
+```
+
+Unit tests exercise changed counts, exact limits, rejection before event
+construction/publication, connection cleanup and the real configured limit.
+The integration scenarios use actual Parquet and DuckDB, replacing a test-owned
+input only after its real count completes. They verify a bounded subsequent
+fetch, rejection before curated writes and complete results at the ceiling.
+The deliberately injected replacement is not a simulated database response.
+
+This limits rows transferred to Python, not DuckDB's internal scan/sort work,
+query duration, row width or filesystem mutation. Existing file and byte caps
+remain separate controls. No transaction or cross-dataset atomicity is added.
+DuckDB documents LIMIT as an output modifier:
+https://duckdb.org/docs/stable/sql/query_syntax/limit.html
