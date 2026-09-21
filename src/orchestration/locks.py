@@ -17,6 +17,15 @@ def _lock_path(base_dir: Path, partition: str) -> Path:
     return base_dir / _LOCKS_DIR / partition / ".lock"
 
 
+def _unique_metadata_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("Duplicate lock metadata field")
+        result[key] = value
+    return result
+
+
 def _is_stale_lock(path: Path, stale_after_seconds: int | None) -> bool:
     if stale_after_seconds is None:
         return False
@@ -43,7 +52,7 @@ def _is_stale_lock(path: Path, stale_after_seconds: int | None) -> bool:
         # The file may have grown since fstat. Never parse an oversized body.
         if len(content) > _MAX_LOCK_METADATA_BYTES:
             return False
-        payload = json.loads(content.decode("utf-8"))
+        payload = json.loads(content.decode("utf-8"), object_pairs_hook=_unique_metadata_object)
         acquired_at = datetime.fromisoformat(str(payload["acquired_at"]))
     except (OSError, KeyError, TypeError, ValueError, RecursionError):
         return False

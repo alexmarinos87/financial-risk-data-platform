@@ -117,3 +117,30 @@ have observed this timing on a particular filesystem in production.
 
 Python's low-level read contract:
 https://docs.python.org/3/library/os.html#os.read
+
+
+## Ambiguous JSON metadata remains blocked
+
+Stale inspection rejects repeated field names within any JSON object, including
+identical values and names that become equal after JSON escape decoding. The
+normal JSON decoder otherwise keeps only the last value, so an old timestamp
+could conceal a conflicting future timestamp and authorize replacement.
+`_unique_metadata_object` rejects the ambiguity before it is discarded. The
+existing metadata-error path then keeps the lock blocked with `OverlapError`;
+the file is not repaired or removed, and earlier acquisitions are rolled back.
+
+Repeated names in separate nested objects are allowed. Valid legacy UTC, offset
+and naive timestamps retain their existing interpretation. Normal lock payloads,
+size limits, bounded reads, acquisition/release behaviour and timeout policy are
+unchanged. A legacy file with duplicate keys now needs ownership investigation,
+not automatic reclamation. This is stricter parsing, not proof that a lock owner
+is dead or protection from the existing inspect-to-unlink race.
+
+```bash
+python -m pytest -q tests/unit/test_partition_lock_duplicate_metadata.py
+```
+
+The regressions exercise the public acquisition API with real temporary files,
+conflicting/identical/escaped keys, nested ambiguity, rollback and positive
+legacy controls. Python documents last-value handling and `object_pairs_hook`:
+https://docs.python.org/3.11/library/json.html#repeated-names-within-an-object
