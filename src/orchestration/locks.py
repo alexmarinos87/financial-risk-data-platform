@@ -106,6 +106,9 @@ def acquire_partition_locks(
                     "acquired_at": datetime.now(timezone.utc).isoformat(),
                 }
             ).encode("utf-8")
+            # Never emit a body that the bounded stale-lock reader cannot inspect.
+            if len(payload) > _MAX_LOCK_METADATA_BYTES:
+                raise ValidationError("Partition lock metadata exceeds the size limit")
             try:
                 fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
             except FileExistsError as exc:

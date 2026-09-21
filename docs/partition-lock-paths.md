@@ -144,3 +144,30 @@ The regressions exercise the public acquisition API with real temporary files,
 conflicting/identical/escaped keys, nested ambiguity, rollback and positive
 legacy controls. Python documents last-value handling and `object_pairs_hook`:
 https://docs.python.org/3.11/library/json.html#repeated-names-within-an-object
+
+## Emitted lock metadata uses the reader's byte budget
+
+Acquisition checks the complete UTF-8-encoded JSON body against the same inclusive
+65,536-byte limit used by stale inspection, before exclusive creation or stale
+replacement. Previously a large owner value could produce a successfully
+acquired lock whose metadata the bounded reader would subsequently refuse to
+inspect. Such a lock remained releasable by its caller, but could not be reclaimed
+through the normal age-based path after an interrupted owner.
+
+The budget includes the owner, partition, timestamp, JSON punctuation and escaping;
+counting owner characters alone is insufficient. Ordinary payload bytes and
+exact-boundary bodies are unchanged. Oversized bodies raise the fixed
+`ValidationError` without creating or replacing that partition's lock file.
+Earlier acquisitions unwind through the existing rollback path. Parent directories
+may already have been created; this is not an all-or-nothing filesystem request.
+The check is after serialization and does not bound input serialization memory.
+
+```bash
+python -m pytest -q tests/unit/test_partition_lock_write_budget.py
+```
+
+The regressions use real temporary files and cover the inclusive byte boundary,
+JSON expansion, protection of an existing stale entry and rollback/retry after a
+later partition exceeds the budget. Existing oversized files are not migrated or
+swept. Ownership inspection remains necessary for manual recovery, and none of
+this establishes that a stale owner is dead or solves concurrent replacement.
