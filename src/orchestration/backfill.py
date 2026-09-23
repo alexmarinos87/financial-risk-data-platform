@@ -62,7 +62,11 @@ def _parse_datetime(value: str) -> datetime:
         raise ValueError(f"Invalid datetime '{value}'. Use ISO-8601 format.") from exc
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed
+    # Storage partitions are UTC hours; normalize before flooring or resuming.
+    try:
+        return parsed.astimezone(timezone.utc)
+    except OverflowError:
+        raise ValueError("Backfill timestamp is outside the supported UTC range") from None
 
 
 def _window_delta(normalized_window: str) -> timedelta:
@@ -138,7 +142,9 @@ def _resume_from_last_success(
     last_success_start = checkpoint.get("last_successful_window_start")
     if not isinstance(last_success_start, str):
         return current
-    resumed = _parse_datetime(last_success_start) + step
+    # Legacy offset checkpoints can fall inside, rather than on, a UTC hour.
+    completed_hour = _parse_datetime(last_success_start).replace(minute=0, second=0, microsecond=0)
+    resumed = completed_hour + step
     return resumed if resumed > current else current
 
 
