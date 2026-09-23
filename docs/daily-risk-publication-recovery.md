@@ -71,3 +71,33 @@ files, and retained JSON formatting. No provider or database is contacted.
 Python's private temporary-directory and replacement contracts:
 https://docs.python.org/3/library/tempfile.html#tempfile.TemporaryDirectory
 https://docs.python.org/3/library/os.html#os.replace
+
+## Recover the CLI report after data is already published
+
+Four additional integration cases run the real CLI in separate interpreters.
+The requested summary destination is obstructed by either a regular file where
+its parent directory must be, or a nonempty directory at the destination. Each
+scenario runs with empty and already populated curated storage. These are real
+filesystem errors; the CLI, writer, reader and summary publisher are not mocked.
+
+The failed command must exit 1 with the fixed storage diagnostic and no success
+JSON. Its test obstruction must remain unchanged and owned staging must be
+cleaned. Despite failure, all eight expected curated rows are present. Complete
+Parquet readback must match the builder with unique calculation IDs; raw bytes
+and any previously published curated bytes remain unchanged.
+
+After removing only its own obstruction, the test reruns the same command twice.
+Both successful runs must write zero curated rows, report every row as already
+present, produce identical JSON content on stdout and in the summary file, and
+preserve all raw/curated bytes. The second replay must retain the latest metrics.
+Every CLI subprocess has a 30-second timeout and is killed and waited for on
+timeout by `subprocess.run`.
+
+Operationally, a failed summary write does not mean the data was rolled back.
+Correct the report destination and replay the same request; inspect selected,
+written and already-present counts rather than deleting valid output. The new
+cases validate existing behaviour; they add no transactional, concurrent-writer,
+power-loss or PostgreSQL guarantees and contact no market-data provider.
+
+Run the existing integration command above, or select this scenario with
+`-k real_cli_recovers`.

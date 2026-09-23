@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+import subprocess
+import sys
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -184,3 +187,84 @@ def test_retry_converges_after_directory_sync_failure_following_publication(
     assert replay["latest_metrics"] == recovered["latest_metrics"]
     assert _snapshot(tmp_path / "curated") == final
     assert _snapshot(tmp_path / "raw") == raw_before
+
+
+@pytest.mark.parametrize("obstruction", ["parent-file", "destination-directory"])
+@pytest.mark.parametrize("existing_output", [False, True])
+def test_real_cli_recovers_when_only_summary_publication_fails(
+    tmp_path: Path, obstruction: str, existing_output: bool,
+) -> None:
+    config = build_storage_config(tmp_path)
+    config_path = write_storage_config(tmp_path)
+    events = _events(VALID_PRICES)
+    assert write_records(events, kind="raw", storage_config=config) == len(events)
+    if existing_output:
+        _run(config_path)
+    raw_before = _snapshot(tmp_path / "raw")
+    curated_before = _snapshot(tmp_path / "curated")
+    assert bool(curated_before) is existing_output
+    summary_path = tmp_path / "reports" / "summary.json"
+    if obstruction == "parent-file":
+        marker = summary_path.parent
+        marker.write_bytes(b"preserve-test-obstruction")
+    else:
+        summary_path.mkdir(parents=True)
+        marker = summary_path / "keep.txt"
+        marker.write_bytes(b"preserve-test-obstruction")
+
+    def cli() -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, "-m", "src.orchestration.run_daily_risk",
+             "--symbol", "IBM", "--end-date", "2026-01-04",
+             "--vol-window", "2", "--var-window", "2",
+             "--storage-config", str(config_path), "--summary-json", str(summary_path)],
+            cwd=Path(__file__).resolve().parents[2], capture_output=True,
+            text=True, check=False, timeout=30,
+        )
+
+    failed = cli()
+    assert failed.returncode == 1
+    assert failed.stdout == ""
+    assert failed.stderr.strip() == (
+        "Daily risk pipeline failed: local storage operation failed; rerun is safe"
+    )
+    assert marker.read_bytes() == b"preserve-test-obstruction"
+    assert not list(tmp_path.rglob(".daily-risk-summary-*"))
+    assert _snapshot(tmp_path / "raw") == raw_before
+    published = _snapshot(tmp_path / "curated")
+    assert len(published) == sum(EXPECTED_COUNTS.values())
+    if existing_output:
+        assert published == curated_before
+    expected = build_daily_risk_outputs(events, volatility_window=2, var_window=2)
+    for dataset, records in {
+        "daily_returns": expected.returns, "daily_volatility": expected.volatility,
+        "daily_risk_summary": expected.risk_summary,
+    }.items():
+        stored = _rows(tmp_path, dataset)
+        assert stored == sorted(records, key=lambda row: row["calculation_id"])
+        assert len({row["calculation_id"] for row in stored}) == len(records)
+
+    # Remove only the explicit obstruction created by this test, never output data.
+    marker.unlink()
+    if obstruction == "destination-directory":
+        summary_path.rmdir()
+    previous_metrics = None
+    for _ in range(2):
+        recovered = cli()
+        assert recovered.returncode == 0, recovered.stderr
+        assert recovered.stderr == ""
+        summary = json.loads(recovered.stdout)
+        assert summary_path.read_text(encoding="utf-8") == (
+            json.dumps(summary, indent=2, sort_keys=True) + "\n"
+        )
+        assert summary["curated_output"] == {
+            dataset: {"records_selected": count, "records_written": 0,
+                      "records_already_present": count}
+            for dataset, count in EXPECTED_COUNTS.items()
+        }
+        if previous_metrics is not None:
+            assert summary["latest_metrics"] == previous_metrics
+        previous_metrics = summary["latest_metrics"]
+        assert _snapshot(tmp_path / "curated") == published
+        assert _snapshot(tmp_path / "raw") == raw_before
+        assert not list(tmp_path.rglob(".daily-risk-summary-*"))
