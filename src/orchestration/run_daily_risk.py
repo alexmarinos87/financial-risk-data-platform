@@ -5,13 +5,20 @@ import json
 import math
 import re
 import sys
+import tempfile
 from collections.abc import Callable, Sequence
 from datetime import date, datetime, time, timedelta, timezone
+from itertools import islice
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from ..analytics.daily_risk import DailyRiskOutputs, build_daily_risk_outputs
+from ..analytics.daily_risk import (
+    DailyRiskOutputs,
+    build_daily_risk_outputs,
+    validate_daily_risk_dates,
+    validate_daily_risk_parameters,
+)
 from ..common.exceptions import StorageError, ValidationError
 from ..ingestion.alpha_vantage_client import alpha_vantage_daily_event_id
 from ..ingestion.schemas import MarketEvent
@@ -120,7 +127,8 @@ def _raw_parquet_files(storage_config: dict[str, Any]) -> list[Path]:
         raise StorageError("Raw daily storage path must be a directory")
 
     try:
-        files = sorted(dataset_path.rglob("*.parquet"))
+        # One extra match proves excess without collecting the entire tree.
+        files = sorted(islice(dataset_path.rglob("*.parquet"), MAX_RAW_FILES + 1))
     except OSError:
         raise StorageError("Raw daily storage could not be inventoried") from None
     if not files:
@@ -178,10 +186,14 @@ def load_alpha_vantage_daily_events(
             cursor = connection.execute(
                 "SELECT event_id, symbol, price, volume, "
                 "epoch_us(ts_event) AS ts_event, epoch_us(ts_ingest) AS ts_ingest, source "
-                f"FROM {relation} WHERE {where_clause} ORDER BY ts_event, event_id",
-                [SOURCE_NAME, canonical_symbol, end_exclusive_us],
+                f"FROM {relation} WHERE {where_clause} ORDER BY ts_event, event_id LIMIT ?",
+                [SOURCE_NAME, canonical_symbol, end_exclusive_us, MAX_RAW_ROWS + 1],
             )
             rows = cursor.fetchall()
+            # The count and fetch are separate observations of external files.
+            # One extra row detects growth without returning a truncated history.
+            if len(rows) > MAX_RAW_ROWS:
+                raise StorageError("Raw daily storage exceeds the row scan limit")
     except StorageError:
         raise
     except Exception:
@@ -190,11 +202,15 @@ def load_alpha_vantage_daily_events(
     events: list[MarketEvent] = []
     try:
         for row in rows:
+            # Preserve the physical value for the schema's lossless integer
+            # validation. int() would silently truncate fractional volumes.
+            if isinstance(row[2], bool) or isinstance(row[3], bool):
+                raise ValueError("Raw daily price and volume must not be booleans")
             event = MarketEvent(
                 event_id=str(row[0]),
                 symbol=str(row[1]),
                 price=float(row[2]),
-                volume=int(row[3]),
+                volume=row[3],
                 ts_event=_timestamp_from_epoch_microseconds(row[4]),
                 ts_ingest=_timestamp_from_epoch_microseconds(row[5]),
                 source=str(row[6]),
@@ -261,10 +277,21 @@ def run_daily_risk(
     config_loader: ConfigLoader | None = None,
 ) -> dict[str, Any]:
     canonical_symbol = _canonical_symbol(symbol)
-    if start_date is not None and start_date > end_date:
-        raise ValidationError("start_date must be on or before end_date")
+    validate_daily_risk_dates(start_date=start_date, end_date=end_date)
+    if end_date is None:
+        raise ValidationError("end_date must be a calendar date")
+    # The raw reader needs an exclusive next-day boundary. Check its range
+    # before loading configuration or scanning any raw files.
+    if end_date == date.max:
+        raise ValidationError("end_date is outside the supported range")
 
-    selected_loader = config_loader or load_storage_config
+    var_confidence = validate_daily_risk_parameters(
+        volatility_window=volatility_window,
+        var_window=var_window,
+        var_confidence=var_confidence,
+    )
+    # A supplied callable may be false-valued; only None requests a default.
+    selected_loader = load_storage_config if config_loader is None else config_loader
     try:
         storage_config = selected_loader(storage_config_path)
     except Exception:
@@ -273,7 +300,7 @@ def run_daily_risk(
         raise StorageError("Storage configuration is invalid")
     _require_daily_datasets(storage_config)
 
-    selected_reader = reader or load_alpha_vantage_daily_events
+    selected_reader = load_alpha_vantage_daily_events if reader is None else reader
     try:
         events = selected_reader(
             storage_config=storage_config,
@@ -293,7 +320,7 @@ def run_daily_risk(
         start_date=start_date,
         end_date=end_date,
     )
-    selected_writer = writer or write_records
+    selected_writer = write_records if writer is None else writer
 
     records_by_dataset = {
         DAILY_DATASETS["returns"]: outputs.returns,
@@ -354,16 +381,18 @@ def run_daily_risk(
 
 
 def _write_summary(path: Path, summary: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary_path = path.with_suffix(path.suffix + ".tmp")
     try:
-        temporary_path.write_text(
-            json.dumps(summary, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-        temporary_path.replace(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # Each writer owns a private staging directory on the target filesystem.
+        # Never write through or remove a predictable, possibly unrelated .tmp.
+        with tempfile.TemporaryDirectory(dir=path.parent, prefix=".daily-risk-summary-") as staging:
+            temporary_path = Path(staging) / "summary.json"
+            temporary_path.write_text(
+                json.dumps(summary, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            temporary_path.replace(path)
     except OSError:
-        temporary_path.unlink(missing_ok=True)
         raise StorageError("Unable to write the daily risk summary") from None
 
 
