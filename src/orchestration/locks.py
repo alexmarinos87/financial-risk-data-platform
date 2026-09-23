@@ -53,7 +53,8 @@ def _is_stale_lock(path: Path, stale_after_seconds: int | None) -> bool:
         if len(content) > _MAX_LOCK_METADATA_BYTES:
             return False
         payload = json.loads(content.decode("utf-8"), object_pairs_hook=_unique_metadata_object)
-        acquired_at = datetime.fromisoformat(str(payload["acquired_at"]))
+        # Preserve the JSON type: a numeric YYYYMMDD is not a timestamp string.
+        acquired_at = datetime.fromisoformat(payload["acquired_at"])
     except (OSError, KeyError, TypeError, ValueError, RecursionError):
         return False
 
