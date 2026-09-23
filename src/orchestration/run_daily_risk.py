@@ -290,7 +290,8 @@ def run_daily_risk(
         var_window=var_window,
         var_confidence=var_confidence,
     )
-    selected_loader = config_loader or load_storage_config
+    # A supplied callable may be false-valued; only None requests a default.
+    selected_loader = load_storage_config if config_loader is None else config_loader
     try:
         storage_config = selected_loader(storage_config_path)
     except Exception:
@@ -299,7 +300,7 @@ def run_daily_risk(
         raise StorageError("Storage configuration is invalid")
     _require_daily_datasets(storage_config)
 
-    selected_reader = reader or load_alpha_vantage_daily_events
+    selected_reader = load_alpha_vantage_daily_events if reader is None else reader
     try:
         events = selected_reader(
             storage_config=storage_config,
@@ -319,7 +320,7 @@ def run_daily_risk(
         start_date=start_date,
         end_date=end_date,
     )
-    selected_writer = writer or write_records
+    selected_writer = write_records if writer is None else writer
 
     records_by_dataset = {
         DAILY_DATASETS["returns"]: outputs.returns,
