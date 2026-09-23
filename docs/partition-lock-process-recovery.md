@@ -26,3 +26,29 @@ This is evidence for ordinary local-filesystem exception unwinding and overlap,
 not a distributed lock, atomic multi-lock acquisition, crash recovery or fencing
 claim. Symlink/replacement and stale-owner races remain outside this contract.
 The tests change no product code, lock payload, timeout policy or deployment.
+
+## Simultaneous acquisition attempts
+
+`tests/integration/test_partition_lock_simultaneous_owners.py` starts two fresh
+processes with the multiprocessing `spawn` context. A shared barrier releases
+both acquisition attempts; a successful owner retains its locks until the
+parent has observed both outcomes. No sleeps or age-based takeover are used.
+
+Four scenarios cover the same partition, reversed and duplicate requests,
+different private partitions followed by a shared partition, and disjoint sets.
+Overlapping requests must admit exactly one complete owner; disjoint requests
+must admit both. While winners still hold their locks, the parent checks owner
+payloads and the complete lock-file inventory, including absence of abandoned
+private locks from the losing request. After release, all child exits must be
+successful and the parent must be able to reacquire the complete union.
+
+Every coordination wait is bounded. Cleanup releases cooperative owners, joins
+children and terminates/kills any child that fails to exit. Forced cleanup does
+not count as success: the test requires zero child exit codes. Result pipes are
+closed. This tests controlled local contention, not fairness, the identity of a
+particular winner, sustained-load performance, crash recovery or stale takeover.
+The test is additional evidence for existing behaviour, not a new product fix.
+
+```bash
+python -m pytest -q tests/integration/test_partition_lock_simultaneous_owners.py
+```
